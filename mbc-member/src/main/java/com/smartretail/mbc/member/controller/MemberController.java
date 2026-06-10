@@ -4,12 +4,16 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.smartretail.mbc.common.result.Result;
 import com.smartretail.mbc.member.dto.MemberIdentityDTO;
 import com.smartretail.mbc.member.dto.MemberMergeDTO;
+import com.smartretail.mbc.member.dto.MemberMergeLogQueryDTO;
+import com.smartretail.mbc.member.dto.MemberMergePreviewDTO;
 import com.smartretail.mbc.member.dto.MemberQueryDTO;
 import com.smartretail.mbc.member.dto.MemberRegisterDTO;
 import com.smartretail.mbc.member.dto.MemberUpdateDTO;
 import com.smartretail.mbc.member.service.MemberService;
 import com.smartretail.mbc.member.vo.MemberSimpleVO;
+import com.smartretail.mbc.member.vo.MemberMergePreviewVO;
 import com.smartretail.mbc.member.vo.MemberVO;
+import com.smartretail.mbc.member.vo.MergeLogVO;
 import com.smartretail.mbc.member.vo.MergeResultVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -88,5 +92,29 @@ public class MemberController {
             @Parameter(description = "合并请求", required = true)
             @Valid @RequestBody MemberMergeDTO dto) {
         return Result.success(memberService.mergeMembers(dto));
+    }
+
+    @Operation(summary = "客服工具合并预览", description = "预览两个会员合并后的结果，包含双方信息、差异、合并模拟结果和风险提示，不实际执行合并操作")
+    @PostMapping("/merge/preview")
+    public Result<MemberMergePreviewVO> previewMerge(
+            @Parameter(description = "合并预览请求", required = true)
+            @Valid @RequestBody MemberMergePreviewDTO dto) {
+        return Result.success(memberService.previewMerge(dto));
+    }
+
+    @Operation(summary = "合并记录查询", description = "分页查询会员合并记录，支持按被合并方手机号、目标方手机号、操作人、时间范围过滤")
+    @PostMapping("/merge/logs")
+    public Result<IPage<MergeLogVO>> pageMergeLogs(
+            @Parameter(description = "合并记录查询条件", required = true)
+            @RequestBody MemberMergeLogQueryDTO dto) {
+        return Result.success(memberService.pageMergeLogs(dto));
+    }
+
+    @Operation(summary = "合并记录详情", description = "根据合并记录ID查询单条合并记录详情")
+    @GetMapping("/merge/log/{mergeLogId}")
+    public Result<MergeLogVO> getMergeLog(
+            @Parameter(description = "合并记录ID", required = true)
+            @PathVariable("mergeLogId") Long mergeLogId) {
+        return Result.success(memberService.getMergeLog(mergeLogId));
     }
 }

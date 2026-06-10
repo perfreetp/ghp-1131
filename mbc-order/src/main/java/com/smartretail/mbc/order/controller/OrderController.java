@@ -8,10 +8,12 @@ import com.smartretail.mbc.order.dto.OrderPayDTO;
 import com.smartretail.mbc.order.dto.OrderQueryDTO;
 import com.smartretail.mbc.order.dto.OrderRefundDTO;
 import com.smartretail.mbc.order.dto.OrderValidateDTO;
+import com.smartretail.mbc.order.dto.PosOrderValidateDTO;
 import com.smartretail.mbc.order.service.OrderService;
 import com.smartretail.mbc.order.vo.OrderStatisticsVO;
 import com.smartretail.mbc.order.vo.OrderValidateResultVO;
 import com.smartretail.mbc.order.vo.OrderVO;
+import com.smartretail.mbc.order.vo.PosValidateResultVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -22,13 +24,21 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-@Tag(name = "订单校验模块")
+@Tag(name = "订单模块", description = "订单校验、创建、支付、完成、退款等接口")
 @RestController
 @RequestMapping("/order")
 @RequiredArgsConstructor
 public class OrderController {
 
     private final OrderService orderService;
+
+    @Operation(summary = "收银端订单试算", description = "收银端完整下单试算：会员识别、商品校验、排除商品识别、券试用、券组合推荐、积分计算、等级折扣、最终金额计算等")
+    @PostMapping("/pos/validate")
+    public Result<PosValidateResultVO> posValidate(
+            @Parameter(description = "收银端试算请求", required = true)
+            @Valid @RequestBody PosOrderValidateDTO dto) {
+        return Result.success(orderService.posValidate(dto));
+    }
 
     @Operation(summary = "订单预校验", description = "下单前预校验会员、优惠券、积分、等级折扣等，不写DB")
     @PostMapping("/validate")

@@ -5,12 +5,18 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartretail.mbc.common.enums.CouponStatusEnum;
 import com.smartretail.mbc.common.enums.MemberLevelEnum;
+import com.smartretail.mbc.common.enums.OrderStatusEnum;
 import com.smartretail.mbc.common.exception.BusinessException;
 import com.smartretail.mbc.common.util.MemberCodeUtil;
 import com.smartretail.mbc.common.util.RedisKeyUtil;
+import com.smartretail.mbc.coupon.entity.CouponInstance;
+import com.smartretail.mbc.coupon.mapper.CouponInstanceMapper;
 import com.smartretail.mbc.member.dto.MemberIdentityDTO;
 import com.smartretail.mbc.member.dto.MemberMergeDTO;
+import com.smartretail.mbc.member.dto.MemberMergeLogQueryDTO;
+import com.smartretail.mbc.member.dto.MemberMergePreviewDTO;
 import com.smartretail.mbc.member.dto.MemberQueryDTO;
 import com.smartretail.mbc.member.dto.MemberRegisterDTO;
 import com.smartretail.mbc.member.dto.MemberUpdateDTO;
@@ -20,8 +26,12 @@ import com.smartretail.mbc.member.mapper.MemberMapper;
 import com.smartretail.mbc.member.mapper.MemberMergeLogMapper;
 import com.smartretail.mbc.member.service.MemberService;
 import com.smartretail.mbc.member.vo.MemberSimpleVO;
+import com.smartretail.mbc.member.vo.MemberMergePreviewVO;
 import com.smartretail.mbc.member.vo.MemberVO;
+import com.smartretail.mbc.member.vo.MergeLogVO;
 import com.smartretail.mbc.member.vo.MergeResultVO;
+import com.smartretail.mbc.order.entity.ConsumeOrder;
+import com.smartretail.mbc.order.mapper.ConsumeOrderMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -29,7 +39,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -40,6 +55,8 @@ public class MemberServiceImpl implements MemberService {
 
     private final MemberMapper memberMapper;
     private final MemberMergeLogMapper memberMergeLogMapper;
+    private final CouponInstanceMapper couponInstanceMapper;
+    private final ConsumeOrderMapper consumeOrderMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper;
 
@@ -47,6 +64,7 @@ public class MemberServiceImpl implements MemberService {
     private static final String MERGE_LOCK_PREFIX = "mbc:lock:merge:";
     private static final long CACHE_TTL_HOURS = 1;
     private static final long LOCK_TIMEOUT_SECONDS = 30;
+    private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -456,6 +474,296 @@ public class MemberServiceImpl implements MemberService {
 
         MemberLevelEnum levelEnum = MemberLevelEnum.getByCode(member.getLevelCode());
         vo.setLevelName(levelEnum.getName());
+        return vo;
+    }
+
+    @Override
+    public MemberMergePreviewVO previewMerge(MemberMergePreviewDTO dto) {
+        Long sourceId = dto.getSourceMemberId();
+        Long targetId = dto.getTargetMemberId();
+
+        if (sourceId.equals(targetId)) {
+            throw new BusinessException("不能合并同一个会员");
+        }
+
+        Member source = memberMapper.selectById(sourceId);
+        Member target = memberMapper.selectById(targetId);
+        if (source == null) {
+            throw new BusinessException("被合并会员不存在");
+        }
+        if (target == null) {
+            throw new BusinessException("目标会员不存在");
+        }
+        if (source.getMergedTo() != null) {
+            throw new BusinessException("被合并会员已被合并，不能重复合并");
+        }
+        if (target.getMergedTo() != null) {
+            throw new BusinessException("目标会员已被合并，不能作为目标");
+        }
+
+        MemberMergePreviewVO.MergeMemberInfoVO sourceInfo = buildMemberInfo(source);
+        MemberMergePreviewVO.MergeMemberInfoVO targetInfo = buildMemberInfo(target);
+
+        MemberMergePreviewVO.MergeDiffSummaryVO diffSummary = buildDiffSummary(sourceInfo, targetInfo);
+
+        MemberMergePreviewVO.MergeResultPreviewVO mergePreview = buildMergePreview(sourceInfo, targetInfo);
+
+        List<String> warnings = buildWarnings(source, target, sourceInfo, targetInfo);
+
+        MemberMergePreviewVO result = new MemberMergePreviewVO();
+        result.setSourceMember(sourceInfo);
+        result.setTargetMember(targetInfo);
+        result.setDiffSummary(diffSummary);
+        result.setMergePreview(mergePreview);
+        result.setWarnings(warnings);
+        return result;
+    }
+
+    @Override
+    public IPage<MergeLogVO> pageMergeLogs(MemberMergeLogQueryDTO dto) {
+        Page<MemberMergeLog> page = new Page<>(dto.getPageNum(), dto.getPageSize());
+        LambdaQueryWrapper<MemberMergeLog> wrapper = new LambdaQueryWrapper<>();
+
+        if (StringUtils.hasText(dto.getOperator())) {
+            wrapper.like(MemberMergeLog::getOperator, dto.getOperator());
+        }
+        if (dto.getStartTime() != null) {
+            wrapper.ge(MemberMergeLog::getCreateTime, dto.getStartTime());
+        }
+        if (dto.getEndTime() != null) {
+            wrapper.le(MemberMergeLog::getCreateTime, dto.getEndTime());
+        }
+
+        List<Long> sourceMemberIds = null;
+        List<Long> targetMemberIds = null;
+
+        if (StringUtils.hasText(dto.getSourcePhone())) {
+            LambdaQueryWrapper<Member> sourceWrapper = new LambdaQueryWrapper<>();
+            sourceWrapper.like(Member::getPhone, dto.getSourcePhone());
+            sourceWrapper.select(Member::getId);
+            List<Member> sourceMembers = memberMapper.selectList(sourceWrapper);
+            if (!sourceMembers.isEmpty()) {
+                sourceMemberIds = sourceMembers.stream().map(Member::getId).toList();
+            } else {
+                sourceMemberIds = List.of(-1L);
+            }
+        }
+        if (StringUtils.hasText(dto.getTargetPhone())) {
+            LambdaQueryWrapper<Member> targetWrapper = new LambdaQueryWrapper<>();
+            targetWrapper.like(Member::getPhone, dto.getTargetPhone());
+            targetWrapper.select(Member::getId);
+            List<Member> targetMembers = memberMapper.selectList(targetWrapper);
+            if (!targetMembers.isEmpty()) {
+                targetMemberIds = targetMembers.stream().map(Member::getId).toList();
+            } else {
+                targetMemberIds = List.of(-1L);
+            }
+        }
+        if (sourceMemberIds != null) {
+            wrapper.in(MemberMergeLog::getSourceMemberId, sourceMemberIds);
+        }
+        if (targetMemberIds != null) {
+            wrapper.in(MemberMergeLog::getTargetMemberId, targetMemberIds);
+        }
+
+        wrapper.orderByDesc(MemberMergeLog::getCreateTime);
+
+        IPage<MemberMergeLog> logPage = memberMergeLogMapper.selectPage(page, wrapper);
+
+        return logPage.convert(this::convertToMergeLogVO);
+    }
+
+    @Override
+    public MergeLogVO getMergeLog(Long mergeLogId) {
+        if (mergeLogId == null) {
+            return null;
+        }
+        MemberMergeLog log = memberMergeLogMapper.selectById(mergeLogId);
+        if (log == null) {
+            return null;
+        }
+        return convertToMergeLogVO(log);
+    }
+
+    private MemberMergePreviewVO.MergeMemberInfoVO buildMemberInfo(Member member) {
+        MemberMergePreviewVO.MergeMemberInfoVO info = new MemberMergePreviewVO.MergeMemberInfoVO();
+        info.setMemberId(member.getId());
+        info.setMemberCode(member.getMemberCode());
+        info.setPhone(member.getPhone());
+        info.setName(member.getName());
+        info.setNickname(member.getNickname());
+        info.setAvatar(member.getAvatar());
+        info.setBirthday(member.getBirthday());
+        info.setRegisterTime(member.getCreateTime());
+        info.setRegisterSource(member.getRegisterSource());
+        info.setStatus(member.getStatus());
+        info.setStatusName(member.getStatus() != null && member.getStatus() == 1 ? "正常" : "禁用");
+        info.setLevelCode(member.getLevelCode());
+        MemberLevelEnum levelEnum = MemberLevelEnum.getByCode(member.getLevelCode());
+        info.setLevelName(levelEnum.getName());
+        info.setGrowthValue(member.getGrowthValue() != null ? member.getGrowthValue() : 0);
+        info.setCurrentPoints(member.getCurrentPoints() != null ? member.getCurrentPoints() : 0);
+        info.setTotalPoints(member.getTotalPoints() != null ? member.getTotalPoints() : 0);
+
+        LambdaQueryWrapper<CouponInstance> couponWrapper = new LambdaQueryWrapper<>();
+        couponWrapper.eq(CouponInstance::getMemberId, member.getId());
+        List<CouponInstance> allCoupons = couponInstanceMapper.selectList(couponWrapper);
+        info.setTotalCouponCount(allCoupons.size());
+
+        long availableCount = allCoupons.stream()
+                .filter(c -> CouponStatusEnum.AVAILABLE.getCode().equals(c.getCouponStatus()))
+                .count();
+        info.setAvailableCouponCount((int) availableCount);
+
+        LambdaQueryWrapper<ConsumeOrder> orderWrapper = new LambdaQueryWrapper<>();
+        orderWrapper.eq(ConsumeOrder::getMemberId, member.getId());
+        orderWrapper.in(ConsumeOrder::getOrderStatus,
+                OrderStatusEnum.COMPLETED.getCode(),
+                OrderStatusEnum.PAID.getCode());
+        List<ConsumeOrder> orders = consumeOrderMapper.selectList(orderWrapper);
+        info.setTotalConsumeCount(orders.size());
+
+        BigDecimal totalAmount = orders.stream()
+                .map(o -> o.getPayAmount() != null ? o.getPayAmount() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        info.setTotalConsumeAmount(totalAmount);
+
+        LocalDateTime lastConsumeTime = orders.stream()
+                .map(ConsumeOrder::getCompleteTime)
+                .filter(Objects::nonNull)
+                .max(LocalDateTime::compareTo)
+                .orElse(null);
+        info.setLastConsumeTime(lastConsumeTime);
+
+        return info;
+    }
+
+    private MemberMergePreviewVO.MergeDiffSummaryVO buildDiffSummary(
+            MemberMergePreviewVO.MergeMemberInfoVO source,
+            MemberMergePreviewVO.MergeMemberInfoVO target) {
+
+        MemberMergePreviewVO.MergeDiffSummaryVO diff = new MemberMergePreviewVO.MergeDiffSummaryVO();
+
+        boolean phoneDiff = !Objects.equals(source.getPhone(), target.getPhone());
+        diff.setPhoneDiff(phoneDiff);
+
+        if (!Objects.equals(source.getLevelCode(), target.getLevelCode())) {
+            diff.setLevelDiff(source.getLevelName() + "→" + target.getLevelName());
+        }
+        diff.setPointsDiff(source.getCurrentPoints());
+        diff.setCouponDiff(source.getAvailableCouponCount());
+        diff.setGrowthDiff(source.getGrowthValue());
+        diff.setConsumeDiff(Math.abs(source.getTotalConsumeCount() - target.getTotalConsumeCount()));
+
+        List<String> dupInfo = new ArrayList<>();
+        if (Objects.equals(source.getName(), target.getName()) && StringUtils.hasText(source.getName())) {
+            dupInfo.add("姓名相同");
+        }
+        if (!Objects.equals(source.getBirthday(), target.getBirthday())
+                && source.getBirthday() != null && target.getBirthday() != null) {
+            dupInfo.add("生日不同");
+        }
+        if (!dupInfo.isEmpty()) {
+            diff.setDuplicateInfo(String.join("/", dupInfo));
+        }
+        return diff;
+    }
+
+    private MemberMergePreviewVO.MergeResultPreviewVO buildMergePreview(
+            MemberMergePreviewVO.MergeMemberInfoVO source,
+            MemberMergePreviewVO.MergeMemberInfoVO target) {
+
+        MemberMergePreviewVO.MergeResultPreviewVO preview = new MemberMergePreviewVO.MergeResultPreviewVO();
+
+        int pointsToTransfer = source.getCurrentPoints();
+        int growthToTransfer = source.getGrowthValue();
+        int couponsToTransfer = source.getAvailableCouponCount();
+
+        int finalPoints = target.getCurrentPoints() + pointsToTransfer;
+        int finalGrowth = target.getGrowthValue() + growthToTransfer;
+        int totalCouponsAfter = target.getAvailableCouponCount() + couponsToTransfer;
+        int totalConsumeCountAfter = target.getTotalConsumeCount() + source.getTotalConsumeCount();
+        BigDecimal totalConsumeAmountAfter = target.getTotalConsumeAmount()
+                .add(source.getTotalConsumeAmount());
+
+        MemberLevelEnum newLevel = MemberLevelEnum.getLevelByGrowth(finalGrowth);
+
+        preview.setFinalPoints(finalPoints);
+        preview.setFinalGrowth(finalGrowth);
+        preview.setFinalLevelCode(newLevel.getCode());
+        preview.setFinalLevelName(newLevel.getName());
+        preview.setTotalCouponsAfter(totalCouponsAfter);
+        preview.setTotalConsumeCountAfter(totalConsumeCountAfter);
+        preview.setTotalConsumeAmountAfter(totalConsumeAmountAfter);
+        preview.setPointsToTransfer(pointsToTransfer);
+        preview.setCouponsToTransfer(couponsToTransfer);
+        preview.setGrowthToTransfer(growthToTransfer);
+        preview.setDescription("合并后将自动清零source会员并标记为已合并状态");
+
+        return preview;
+    }
+
+    private List<String> buildWarnings(Member source, Member target,
+                                       MemberMergePreviewVO.MergeMemberInfoVO sourceInfo,
+                                       MemberMergePreviewVO.MergeMemberInfoVO targetInfo) {
+        List<String> warnings = new ArrayList<>();
+
+        if (!Objects.equals(source.getPhone(), target.getPhone())) {
+            warnings.add("合并后将统一为目标手机号" + target.getPhone());
+        }
+
+        LambdaQueryWrapper<CouponInstance> lockedCouponWrapper = new LambdaQueryWrapper<>();
+        lockedCouponWrapper.eq(CouponInstance::getMemberId, source.getId());
+        lockedCouponWrapper.eq(CouponInstance::getCouponStatus, CouponStatusEnum.LOCKED.getCode());
+        Long lockedCouponCount = couponInstanceMapper.selectCount(lockedCouponWrapper);
+        if (lockedCouponCount != null && lockedCouponCount > 0) {
+            warnings.add("被合并方存在" + lockedCouponCount + "张锁定优惠券，无法迁移");
+        }
+
+        if (sourceInfo.getLevelCode() != null && targetInfo.getLevelCode() != null
+                && sourceInfo.getLevelCode() > targetInfo.getLevelCode()) {
+            warnings.add("被合并方等级(" + sourceInfo.getLevelName()
+                    + ")高于目标方等级(" + targetInfo.getLevelName() + ")，请确认");
+        }
+
+        if (source.getStatus() != null && source.getStatus() == 0) {
+            warnings.add("被合并方会员状态为禁用，请确认");
+        }
+
+        return warnings;
+    }
+
+    private MergeLogVO convertToMergeLogVO(MemberMergeLog log) {
+        if (log == null) {
+            return null;
+        }
+        MergeLogVO vo = new MergeLogVO();
+        vo.setId(log.getId());
+        vo.setMergeNo(log.getMergeNo());
+        vo.setSourceMemberId(log.getSourceMemberId());
+        vo.setTargetMemberId(log.getTargetMemberId());
+        vo.setMergedPoints(log.getMergedPoints());
+        vo.setMergedGrowth(log.getMergedGrowth());
+        vo.setMergedCoupons(log.getMergedCoupons());
+        vo.setOperator(log.getOperator());
+        vo.setOperatorName(log.getOperator());
+        vo.setReason(log.getReason());
+        vo.setCreateTime(log.getCreateTime());
+        if (log.getCreateTime() != null) {
+            vo.setCreateTimeFmt(log.getCreateTime().format(DATE_TIME_FORMATTER));
+        }
+
+        Member source = memberMapper.selectById(log.getSourceMemberId());
+        if (source != null) {
+            vo.setSourcePhone(source.getPhone());
+            vo.setSourceName(source.getName());
+        }
+        Member target = memberMapper.selectById(log.getTargetMemberId());
+        if (target != null) {
+            vo.setTargetPhone(target.getPhone());
+            vo.setTargetName(target.getName());
+        }
+
         return vo;
     }
 }

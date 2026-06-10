@@ -25,18 +25,23 @@ import com.smartretail.mbc.level.service.LevelService;
 import com.smartretail.mbc.member.entity.Member;
 import com.smartretail.mbc.member.mapper.MemberMapper;
 import com.smartretail.mbc.member.vo.MemberSimpleVO;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartretail.mbc.order.dto.OrderCompleteDTO;
 import com.smartretail.mbc.order.dto.OrderCreateDTO;
+import com.smartretail.mbc.order.dto.OrderItemDTO;
 import com.smartretail.mbc.order.dto.OrderPayDTO;
 import com.smartretail.mbc.order.dto.OrderQueryDTO;
 import com.smartretail.mbc.order.dto.OrderRefundDTO;
 import com.smartretail.mbc.order.dto.OrderValidateDTO;
+import com.smartretail.mbc.order.dto.PosOrderValidateDTO;
 import com.smartretail.mbc.order.entity.ConsumeOrder;
 import com.smartretail.mbc.order.mapper.ConsumeOrderMapper;
 import com.smartretail.mbc.order.service.OrderService;
 import com.smartretail.mbc.order.vo.OrderStatisticsVO;
 import com.smartretail.mbc.order.vo.OrderValidateResultVO;
 import com.smartretail.mbc.order.vo.OrderVO;
+import com.smartretail.mbc.order.vo.PosValidateResultVO;
 import com.smartretail.mbc.point.dto.PointAddDTO;
 import com.smartretail.mbc.point.service.PointService;
 import lombok.RequiredArgsConstructor;
@@ -51,8 +56,13 @@ import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -76,6 +86,382 @@ public class OrderServiceImpl implements OrderService {
     private static final int IDEMPOTENT_EXPIRE_MINUTES = 30;
     private static final BigDecimal POINT_RATIO = new BigDecimal("100");
     private static final BigDecimal MAX_POINT_RATIO = new BigDecimal("0.5");
+    private static final int MAX_COUPON_COMBINATION = 3;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Override
+    public PosValidateResultVO posValidate(PosOrderValidateDTO dto) {
+        PosValidateResultVO result = new PosValidateResultVO();
+        List<String> warnings = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        List<PosValidateResultVO.ItemResultVO> itemResults = new ArrayList<>();
+
+        BigDecimal originalAmount = BigDecimal.ZERO;
+        for (OrderItemDTO item : dto.getItems()) {
+            PosValidateResultVO.ItemResultVO itemResult = new PosValidateResultVO.ItemResultVO();
+            itemResult.setSkuId(item.getSkuId());
+            itemResult.setSkuName(item.getSkuName());
+            itemResult.setSubtotal(item.getSubtotal());
+            itemResult.setExcluded(Boolean.FALSE);
+
+            if (item.getQuantity() == null || item.getQuantity() <= 0) {
+                errors.add("商品[" + item.getSkuId() + "]数量必须大于0");
+                itemResult.setExcluded(Boolean.TRUE);
+                itemResult.setExcludeReason("数量不合法");
+            }
+            if (item.getUnitPrice() == null || item.getSubtotal() == null) {
+                errors.add("商品[" + item.getSkuId() + "]单价或小计不能为空");
+                itemResult.setExcluded(Boolean.TRUE);
+                itemResult.setExcludeReason("单价或小计为空");
+            } else if (item.getQuantity() != null && item.getQuantity() > 0) {
+                BigDecimal expectedSubtotal = item.getUnitPrice().multiply(new BigDecimal(item.getQuantity()));
+                if (expectedSubtotal.compareTo(item.getSubtotal()) != 0) {
+                    errors.add("商品[" + item.getSkuId() + "]小计不等于单价×数量");
+                    itemResult.setExcluded(Boolean.TRUE);
+                    itemResult.setExcludeReason("小计计算错误");
+                }
+            }
+            if (item.getSubtotal() != null) {
+                originalAmount = originalAmount.add(item.getSubtotal());
+            }
+            itemResults.add(itemResult);
+        }
+
+        if (dto.getTotalAmount() != null && dto.getTotalAmount().compareTo(originalAmount) != 0) {
+            warnings.add("传入的totalAmount与商品合计不一致，已使用商品合计");
+        }
+        result.setOriginalAmount(originalAmount);
+        result.setItemResults(itemResults);
+
+        Member member = null;
+        LevelRule levelRule = null;
+        MemberSimpleVO memberSimpleVO = null;
+
+        if (dto.getMemberId() != null) {
+            member = memberMapper.selectById(dto.getMemberId());
+            if (member == null) {
+                warnings.add("根据memberId未找到会员");
+            }
+        } else if (dto.getPhone() != null && !dto.getPhone().isEmpty()) {
+            member = memberMapper.selectOne(
+                    new LambdaQueryWrapper<Member>()
+                            .eq(Member::getPhone, dto.getPhone())
+                            .eq(Member::getStatus, 1)
+                            .last("LIMIT 1")
+            );
+            if (member == null) {
+                warnings.add("根据手机号未找到会员");
+            }
+        } else if (dto.getMemberCode() != null && !dto.getMemberCode().isEmpty()) {
+            member = memberMapper.selectOne(
+                    new LambdaQueryWrapper<Member>()
+                            .eq(Member::getMemberCode, dto.getMemberCode())
+                            .eq(Member::getStatus, 1)
+                            .last("LIMIT 1")
+            );
+            if (member == null) {
+                warnings.add("根据会员码未找到会员");
+            }
+        }
+
+        if (member != null) {
+            if (member.getStatus() == null || member.getStatus() != 1) {
+                warnings.add("会员状态异常");
+                member = null;
+            } else {
+                memberSimpleVO = new MemberSimpleVO();
+                BeanUtils.copyProperties(member, memberSimpleVO);
+                MemberLevelEnum levelEnum = MemberLevelEnum.getByCode(member.getLevelCode());
+                memberSimpleVO.setLevelName(levelEnum.getName());
+
+                levelRule = levelRuleMapper.selectOne(
+                        new LambdaQueryWrapper<LevelRule>()
+                                .eq(LevelRule::getLevelCode, member.getLevelCode())
+                                .eq(LevelRule::getStatus, 1)
+                );
+                if (levelRule == null) {
+                    levelRule = getDefaultLevelRule();
+                }
+            }
+        }
+        result.setMemberInfo(memberSimpleVO);
+
+        int excludedItemCount = 0;
+        BigDecimal couponableAmount = originalAmount;
+
+        List<PosValidateResultVO.CouponTrialVO> couponTrials = new ArrayList<>();
+        List<Long> bestCouponCombination = new ArrayList<>();
+        BigDecimal bestCouponAmount = BigDecimal.ZERO;
+        List<Long> finalCouponIds = new ArrayList<>();
+        BigDecimal finalCouponAmount = BigDecimal.ZERO;
+
+        if (member != null) {
+            List<CouponInstance> allCoupons = couponInstanceMapper.selectList(
+                    new LambdaQueryWrapper<CouponInstance>()
+                            .eq(CouponInstance::getMemberId, member.getId())
+                            .eq(CouponInstance::getCouponStatus, CouponStatusEnum.AVAILABLE.getCode())
+            );
+
+            Set<Long> couponIdSet = new HashSet<>();
+            if (dto.getUseCouponIds() != null) {
+                for (Long cid : dto.getUseCouponIds()) {
+                    couponIdSet.add(cid);
+                    CouponInstance specified = couponInstanceMapper.selectById(cid);
+                    if (specified != null && !allCoupons.contains(specified)) {
+                        allCoupons.add(specified);
+                    }
+                }
+            }
+
+            Map<Long, Set<String>> couponExcludeMap = new HashMap<>();
+
+            for (CouponInstance instance : allCoupons) {
+                PosValidateResultVO.CouponTrialVO trial = new PosValidateResultVO.CouponTrialVO();
+                trial.setInstanceId(instance.getId());
+                trial.setTemplateId(instance.getTemplateId());
+                trial.setAvailable(Boolean.FALSE);
+                trial.setApplicableItemSkus(new ArrayList<>());
+
+                LocalDateTime now = LocalDateTime.now();
+                if (!instance.getMemberId().equals(member.getId())) {
+                    trial.setReason("优惠券不属于该会员");
+                    couponTrials.add(trial);
+                    continue;
+                }
+                if (!CouponStatusEnum.AVAILABLE.getCode().equals(instance.getCouponStatus())) {
+                    trial.setReason("优惠券状态不可用");
+                    couponTrials.add(trial);
+                    continue;
+                }
+                if (instance.getValidStart() != null && now.isBefore(instance.getValidStart())) {
+                    trial.setReason("优惠券尚未生效");
+                    warnings.add("优惠券[" + instance.getId() + "]尚未生效");
+                    couponTrials.add(trial);
+                    continue;
+                }
+                if (instance.getValidEnd() != null && now.isAfter(instance.getValidEnd())) {
+                    trial.setReason("优惠券已过期");
+                    warnings.add("优惠券[" + instance.getId() + "]已过期");
+                    couponTrials.add(trial);
+                    continue;
+                }
+
+                CouponTemplate template = couponTemplateMapper.selectById(instance.getTemplateId());
+                if (template == null) {
+                    trial.setReason("优惠券模板不存在");
+                    couponTrials.add(trial);
+                    continue;
+                }
+
+                trial.setCouponName(template.getCouponName());
+                trial.setCouponType(template.getCouponType());
+                trial.setReduceAmount(template.getReduceAmount() != null ? template.getReduceAmount() : BigDecimal.ZERO);
+
+                Set<String> excludeSkus = new HashSet<>();
+                if (template.getExcludeItems() != null && !template.getExcludeItems().isEmpty()) {
+                    try {
+                        List<String> excludeList = objectMapper.readValue(
+                                template.getExcludeItems(),
+                                new TypeReference<List<String>>() {}
+                        );
+                        excludeSkus.addAll(excludeList);
+                    } catch (Exception e) {
+                        log.warn("解析券排除商品失败, templateId: {}", template.getId(), e);
+                    }
+                }
+                couponExcludeMap.put(instance.getId(), excludeSkus);
+
+                List<String> applicableSkus = new ArrayList<>();
+                BigDecimal itemCouponableAmount = BigDecimal.ZERO;
+                int currentExcludedCount = 0;
+                for (int i = 0; i < dto.getItems().size(); i++) {
+                    OrderItemDTO item = dto.getItems().get(i);
+                    PosValidateResultVO.ItemResultVO itemResult = itemResults.get(i);
+                    if (excludeSkus.contains(item.getSkuId())) {
+                        if (!Boolean.TRUE.equals(itemResult.getExcluded())) {
+                            itemResult.setExcluded(Boolean.TRUE);
+                            itemResult.setExcludeReason("商品被券排除，不可参与优惠");
+                        }
+                        currentExcludedCount++;
+                    } else if (item.getSubtotal() != null && !Boolean.TRUE.equals(itemResult.getExcluded())) {
+                        applicableSkus.add(item.getSkuId());
+                        itemCouponableAmount = itemCouponableAmount.add(item.getSubtotal());
+                    }
+                }
+
+                excludedItemCount = Math.max(excludedItemCount, currentExcludedCount);
+                trial.setApplicableAmount(itemCouponableAmount);
+                trial.setApplicableItemSkus(applicableSkus);
+
+                if (template.getFullAmount() != null && itemCouponableAmount.compareTo(template.getFullAmount()) < 0) {
+                    trial.setReason("不满足使用门槛，需满" + template.getFullAmount() + "元，可优惠金额为" + itemCouponableAmount + "元");
+                    couponTrials.add(trial);
+                    continue;
+                }
+
+                trial.setAvailable(Boolean.TRUE);
+                trial.setReason("可正常使用");
+                BigDecimal savedAmt = template.getReduceAmount() != null ? template.getReduceAmount() : BigDecimal.ZERO;
+                if (savedAmt.compareTo(itemCouponableAmount) > 0) {
+                    savedAmt = itemCouponableAmount;
+                }
+                trial.setSavedAmount(savedAmt);
+                couponTrials.add(trial);
+            }
+
+            excludedItemCount = 0;
+            couponableAmount = BigDecimal.ZERO;
+            Set<String> allExcludedSkus = new HashSet<>();
+            for (Set<String> s : couponExcludeMap.values()) {
+                allExcludedSkus.addAll(s);
+            }
+            for (int i = 0; i < dto.getItems().size(); i++) {
+                OrderItemDTO item = dto.getItems().get(i);
+                PosValidateResultVO.ItemResultVO itemResult = itemResults.get(i);
+                if (allExcludedSkus.contains(item.getSkuId())) {
+                    if (!Boolean.TRUE.equals(itemResult.getExcluded())) {
+                        itemResult.setExcluded(Boolean.TRUE);
+                        itemResult.setExcludeReason("商品被券排除，不可参与优惠");
+                    }
+                    excludedItemCount++;
+                } else if (!Boolean.TRUE.equals(itemResult.getExcluded()) && item.getSubtotal() != null) {
+                    couponableAmount = couponableAmount.add(item.getSubtotal());
+                }
+            }
+
+            List<PosValidateResultVO.CouponTrialVO> availableTrials = couponTrials.stream()
+                    .filter(t -> Boolean.TRUE.equals(t.getAvailable()))
+                    .sorted(Comparator.comparing(
+                            PosValidateResultVO.CouponTrialVO::getSavedAmount,
+                            Comparator.nullsLast(Comparator.reverseOrder())
+                    ))
+                    .collect(Collectors.toList());
+
+            if (!availableTrials.isEmpty()) {
+                boolean hasNonStackable = false;
+                List<Long> greedyCombination = new ArrayList<>();
+                BigDecimal greedyAmount = BigDecimal.ZERO;
+
+                for (PosValidateResultVO.CouponTrialVO trial : availableTrials) {
+                    CouponTemplate tpl = couponTemplateMapper.selectById(trial.getTemplateId());
+                    boolean isStackable = tpl == null || tpl.getStackable() == null || tpl.getStackable() == 1;
+
+                    if (!isStackable) {
+                        if (!hasNonStackable) {
+                            greedyCombination.add(trial.getInstanceId());
+                            greedyAmount = greedyAmount.add(trial.getSavedAmount() != null ? trial.getSavedAmount() : BigDecimal.ZERO);
+                            hasNonStackable = true;
+                        }
+                    } else {
+                        greedyCombination.add(trial.getInstanceId());
+                        greedyAmount = greedyAmount.add(trial.getSavedAmount() != null ? trial.getSavedAmount() : BigDecimal.ZERO);
+                    }
+
+                    if (greedyCombination.size() >= MAX_COUPON_COMBINATION) {
+                        break;
+                    }
+                }
+
+                bestCouponCombination = greedyCombination;
+                bestCouponAmount = greedyAmount;
+            }
+
+            if (dto.getTryAllCoupons() == null || Boolean.TRUE.equals(dto.getTryAllCoupons())) {
+                finalCouponIds = new ArrayList<>(bestCouponCombination);
+                finalCouponAmount = bestCouponAmount;
+            } else if (dto.getUseCouponIds() != null && !dto.getUseCouponIds().isEmpty()) {
+                for (Long cid : dto.getUseCouponIds()) {
+                    for (PosValidateResultVO.CouponTrialVO trial : couponTrials) {
+                        if (cid.equals(trial.getInstanceId()) && Boolean.TRUE.equals(trial.getAvailable())) {
+                            finalCouponIds.add(cid);
+                            finalCouponAmount = finalCouponAmount.add(trial.getSavedAmount() != null ? trial.getSavedAmount() : BigDecimal.ZERO);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        result.setExcludedItemCount(excludedItemCount);
+        result.setCouponableAmount(couponableAmount);
+        result.setCouponTrials(couponTrials);
+        result.setBestCouponCombination(bestCouponCombination);
+        result.setBestCouponAmount(bestCouponAmount);
+        result.setFinalCouponIds(finalCouponIds);
+        result.setFinalCouponAmount(finalCouponAmount);
+
+        Integer currentPoints = 0;
+        Integer maxUsablePoints = 0;
+        BigDecimal maxUsablePointAmount = BigDecimal.ZERO;
+        Integer finalUsedPoints = 0;
+        BigDecimal finalPointAmount = BigDecimal.ZERO;
+
+        if (member != null) {
+            currentPoints = member.getCurrentPoints() != null ? member.getCurrentPoints() : 0;
+            maxUsablePointAmount = couponableAmount.multiply(MAX_POINT_RATIO);
+            int maxByAmount = maxUsablePointAmount.multiply(POINT_RATIO).setScale(0, RoundingMode.DOWN).intValue();
+            maxUsablePoints = Math.min(currentPoints, maxByAmount);
+            maxUsablePointAmount = new BigDecimal(maxUsablePoints).divide(POINT_RATIO, 2, RoundingMode.HALF_UP);
+
+            if (dto.getUsePoints() == null) {
+                finalUsedPoints = maxUsablePoints;
+            } else {
+                finalUsedPoints = Math.min(dto.getUsePoints(), maxUsablePoints);
+            }
+            finalPointAmount = new BigDecimal(finalUsedPoints).divide(POINT_RATIO, 2, RoundingMode.HALF_UP);
+        }
+
+        result.setCurrentPoints(currentPoints);
+        result.setMaxUsablePoints(maxUsablePoints);
+        result.setMaxUsablePointAmount(maxUsablePointAmount);
+        result.setFinalUsedPoints(finalUsedPoints);
+        result.setFinalPointAmount(finalPointAmount);
+
+        Integer levelCode = null;
+        String levelName = null;
+        BigDecimal discountRate = BigDecimal.ZERO;
+        BigDecimal levelDiscount = BigDecimal.ZERO;
+
+        if (member != null && levelRule != null) {
+            levelCode = levelRule.getLevelCode();
+            levelName = levelRule.getLevelName();
+            discountRate = levelRule.getDiscountRate() != null ? levelRule.getDiscountRate() : BigDecimal.ZERO;
+            if (discountRate.compareTo(BigDecimal.ZERO) > 0 && discountRate.compareTo(BigDecimal.TEN) <= 0) {
+                levelDiscount = originalAmount.multiply(BigDecimal.TEN.subtract(discountRate)).divide(BigDecimal.TEN, 2, RoundingMode.HALF_UP);
+            }
+        }
+
+        result.setLevelCode(levelCode);
+        result.setLevelName(levelName);
+        result.setDiscountRate(discountRate);
+        result.setLevelDiscount(levelDiscount);
+
+        BigDecimal totalDiscount = finalCouponAmount.add(finalPointAmount).add(levelDiscount);
+        BigDecimal finalPayAmount = originalAmount.subtract(totalDiscount);
+        if (finalPayAmount.compareTo(BigDecimal.ZERO) < 0) {
+            finalPayAmount = BigDecimal.ZERO;
+        }
+        result.setTotalDiscount(totalDiscount);
+        result.setFinalPayAmount(finalPayAmount);
+
+        Integer earnablePoints = 0;
+        Integer earnableGrowth = 0;
+        if (member != null && levelRule != null) {
+            BigDecimal pointRatio = levelRule.getPointRatio() != null ? levelRule.getPointRatio() : BigDecimal.ZERO;
+            BigDecimal growthRatio = levelRule.getGrowthRatio() != null ? levelRule.getGrowthRatio() : BigDecimal.ZERO;
+            earnablePoints = finalPayAmount.multiply(pointRatio).setScale(0, RoundingMode.HALF_UP).intValue();
+            earnableGrowth = finalPayAmount.multiply(growthRatio).setScale(0, RoundingMode.HALF_UP).intValue();
+        }
+        result.setEarnablePoints(earnablePoints);
+        result.setEarnableGrowth(earnableGrowth);
+
+        result.setWarnings(warnings);
+        result.setErrors(errors);
+        result.setValid(errors.isEmpty());
+
+        return result;
+    }
 
     @Override
     public OrderValidateResultVO validateOrder(OrderValidateDTO dto) {

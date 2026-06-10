@@ -7,11 +7,15 @@ import com.smartretail.mbc.order.dto.OrderPayDTO;
 import com.smartretail.mbc.order.dto.OrderQueryDTO;
 import com.smartretail.mbc.order.dto.OrderRefundDTO;
 import com.smartretail.mbc.order.dto.OrderValidateDTO;
+import com.smartretail.mbc.order.dto.PosOrderValidateDTO;
 import com.smartretail.mbc.order.vo.OrderStatisticsVO;
 import com.smartretail.mbc.order.vo.OrderValidateResultVO;
 import com.smartretail.mbc.order.vo.OrderVO;
+import com.smartretail.mbc.order.vo.PosValidateResultVO;
 
 public interface OrderService {
+
+    PosValidateResultVO posValidate(PosOrderValidateDTO dto);
 
     OrderValidateResultVO validateOrder(OrderValidateDTO dto);
 

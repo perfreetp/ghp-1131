@@ -140,4 +140,87 @@
         ORDER BY m.level_code
     </select>
 
+    <select id="selectActivityCouponEffect" resultType="java.util.Map">
+        SELECT
+            ct.id AS templateId,
+            ct.coupon_name AS couponName,
+            COALESCE(COUNT(ci.id), 0) AS issuedCount,
+            COALESCE(SUM(CASE WHEN ci.coupon_status = 2 THEN 1 ELSE 0 END), 0) AS usedCount,
+            COALESCE(SUM(CASE WHEN ci.coupon_status IN (0, 1, 4) THEN 1 ELSE 0 END), 0) AS unusedCount,
+            COALESCE(SUM(CASE WHEN ci.coupon_status IN (3, 5) THEN 1 ELSE 0 END), 0) AS expiredCount,
+            COALESCE(SUM(CASE WHEN ci.coupon_status = 2 THEN o.pay_amount ELSE 0 END), 0) AS usedOrderAmount
+        FROM t_coupon_template ct
+        LEFT JOIN t_coupon_instance ci ON ci.template_id = ct.id AND ci.is_deleted = 0
+        LEFT JOIN t_consume_order o ON ci.used_order_no = o.order_no AND o.order_status IN (1, 2) AND o.is_deleted = 0
+        WHERE ct.activity_id = #{activityId}
+          AND ct.is_deleted = 0
+        GROUP BY ct.id, ct.coupon_name
+        ORDER BY ct.id
+    </select>
+
+    <select id="selectActivityMemberLevels" resultType="java.util.Map">
+        SELECT
+            m.level_code AS levelCode,
+            COUNT(DISTINCT CASE WHEN bul.benefit_type = 1 THEN bul.member_id END) AS participateCount,
+            COUNT(DISTINCT CASE WHEN bul.benefit_type = 2 THEN bul.member_id END) AS verifyCount,
+            COALESCE(SUM(bul.order_amount), 0) AS orderAmount
+        FROM t_benefit_use_log bul
+        LEFT JOIN t_member m ON bul.member_id = m.id AND m.is_deleted = 0
+        WHERE bul.benefit_id = #{activityId}
+          AND bul.use_status IN (1, 2)
+          AND bul.is_deleted = 0
+        GROUP BY m.level_code
+        ORDER BY m.level_code
+    </select>
+
+    <select id="selectActivityDailyDetail" resultType="java.util.Map">
+        SELECT
+            DATE(bul.create_time) AS statDate,
+            COUNT(DISTINCT CASE WHEN bul.benefit_type = 1 THEN bul.member_id END) AS newReceive,
+            COUNT(DISTINCT CASE WHEN bul.benefit_type = 2 THEN bul.member_id END) AS newVerify,
+            COUNT(DISTINCT CASE WHEN bul.order_no IS NOT NULL THEN bul.order_no END) AS orderCount,
+            COALESCE(SUM(CASE WHEN o.order_status IN (1, 2) THEN bul.order_amount ELSE 0 END), 0) AS orderAmount,
+            COUNT(DISTINCT CASE WHEN o.order_status = 3 THEN bul.order_no END) AS refundCount,
+            COALESCE(SUM(CASE WHEN o.order_status = 3 THEN o.refund_amount ELSE 0 END), 0) AS refundAmount
+        FROM t_benefit_use_log bul
+        LEFT JOIN t_consume_order o ON bul.order_no = o.order_no AND o.is_deleted = 0
+        WHERE bul.benefit_id = #{activityId}
+          AND bul.use_status IN (1, 2)
+          AND bul.is_deleted = 0
+        GROUP BY DATE(bul.create_time)
+        ORDER BY statDate ASC
+    </select>
+
+    <select id="selectActivityRefundImpact" resultType="java.util.Map">
+        SELECT
+            COALESCE(COUNT(DISTINCT o.id), 0) AS totalRefundCount,
+            COALESCE(SUM(o.refund_amount), 0) AS totalRefundAmount
+        FROM t_consume_order o
+        INNER JOIN t_benefit_use_log bul ON o.order_no = bul.order_no AND bul.is_deleted = 0
+        WHERE o.order_status = 3
+          AND o.is_deleted = 0
+          AND bul.benefit_id = #{activityId}
+          <if test="start != null">
+              AND o.refund_time >= #{start}
+          </if>
+          <if test="end != null">
+              AND o.refund_time <= #{end}
+          </if>
+    </select>
+
+    <select id="countActivityNewMembers" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT m.id)
+        FROM t_member m
+        INNER JOIN t_benefit_use_log bul ON m.id = bul.member_id AND bul.is_deleted = 0
+        WHERE bul.benefit_id = #{activityId}
+          AND bul.use_status IN (1, 2)
+          AND m.is_deleted = 0
+          <if test="start != null">
+              AND m.create_time >= #{start}
+          </if>
+          <if test="end != null">
+              AND m.create_time <= #{end}
+          </if>
+    </select>
+
 </mapper>

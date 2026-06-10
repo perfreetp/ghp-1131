@@ -39,4 +39,18 @@ public interface QueryStatsMapper {
     List<Map<String, Object>> selectActivityDailyTrend(@Param("activityId") Long activityId);
 
     List<Map<String, Object>> countActivityParticipantsByLevel(@Param("activityId") Long activityId);
+
+    Map<String, Object> selectActivityCouponEffect(@Param("activityId") Long activityId);
+
+    List<Map<String, Object>> selectActivityMemberLevels(@Param("activityId") Long activityId);
+
+    List<Map<String, Object>> selectActivityDailyDetail(@Param("activityId") Long activityId);
+
+    Map<String, Object> selectActivityRefundImpact(@Param("activityId") Long activityId,
+                                                   @Param("start") LocalDateTime start,
+                                                   @Param("end") LocalDateTime end);
+
+    Long countActivityNewMembers(@Param("activityId") Long activityId,
+                                 @Param("start") LocalDateTime start,
+                                 @Param("end") LocalDateTime end);
 }
