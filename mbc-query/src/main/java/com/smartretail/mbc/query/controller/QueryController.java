@@ -13,7 +13,11 @@ import com.smartretail.mbc.query.dto.ActivityUpdateDTO;
 import com.smartretail.mbc.query.dto.BenefitChainQueryDTO;
 import com.smartretail.mbc.query.dto.BenefitListQueryDTO;
 import com.smartretail.mbc.query.dto.ConsumeRecordQueryDTO;
+import com.smartretail.mbc.query.dto.DashboardQueryDTO;
 import com.smartretail.mbc.query.dto.DashboardStatsDTO;
+import com.smartretail.mbc.query.dto.GrayActionDTO;
+import com.smartretail.mbc.query.dto.GrayEffectQueryDTO;
+import com.smartretail.mbc.query.dto.GrayRuleCreateDTO;
 import com.smartretail.mbc.query.dto.IdempotentHandleDTO;
 import com.smartretail.mbc.query.dto.MemberTimelineQueryDTO;
 import com.smartretail.mbc.query.dto.MiniBenefitQueryDTO;
@@ -21,23 +25,34 @@ import com.smartretail.mbc.query.dto.ReconcileDetailQueryDTO;
 import com.smartretail.mbc.query.dto.ReconcileQueryDTO;
 import com.smartretail.mbc.query.entity.ActivityBudgetLog;
 import com.smartretail.mbc.query.entity.RiskRecord;
+import com.smartretail.mbc.member.dto.StoreTaskQueryDTO;
+import com.smartretail.mbc.member.service.StoreTaskService;
+import com.smartretail.mbc.member.vo.StoreTaskBoardVO;
+import com.smartretail.mbc.member.vo.StoreTaskVO;
 import com.smartretail.mbc.query.service.ActivityBudgetService;
+import com.smartretail.mbc.query.service.DashboardService;
 import com.smartretail.mbc.query.service.ExceptionHandleService;
+import com.smartretail.mbc.query.service.GrayService;
 import com.smartretail.mbc.query.service.MemberTimelineService;
 import com.smartretail.mbc.query.service.QueryService;
-import com.smartretail.mbc.query.service.RiskService;
 import com.smartretail.mbc.query.service.ReconcileService;
+import com.smartretail.mbc.query.service.RiskService;
 import com.smartretail.mbc.query.vo.MemberTimelineVO;
 import com.smartretail.mbc.query.vo.BenefitChainVO;
 import com.smartretail.mbc.query.vo.IdempotentRecordVO;
 import com.smartretail.mbc.query.vo.ReconcileDetailVO;
 import com.smartretail.mbc.query.vo.ReconcileResultVO;
+import com.smartretail.mbc.query.vo.AbnormalStoreVO;
 import com.smartretail.mbc.query.vo.ActivityBudgetProgressVO;
 import com.smartretail.mbc.query.vo.ActivityEffectDetailVO;
 import com.smartretail.mbc.query.vo.ActivityStatsVO;
 import com.smartretail.mbc.query.vo.ConsumeRecordVO;
+import com.smartretail.mbc.query.vo.DailyDashboardItemVO;
 import com.smartretail.mbc.query.vo.DashboardStatsVO;
+import com.smartretail.mbc.query.vo.GrayEffectVO;
+import com.smartretail.mbc.query.vo.GrayRuleVO;
 import com.smartretail.mbc.query.vo.MiniPersonalBenefitVO;
+import com.smartretail.mbc.query.vo.OperationDashboardVO;
 import com.smartretail.mbc.query.vo.PersonalBenefitVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -73,6 +88,12 @@ public class QueryController {
     private final RiskService riskService;
 
     private final ExceptionHandleService exceptionHandleService;
+
+    private final DashboardService dashboardService;
+
+    private final StoreTaskService storeTaskService;
+
+    private final GrayService grayService;
 
     @Operation(summary = "查询消费记录", description = "按会员ID分页查询消费记录，支持时间范围、订单类型、金额、门店筛选")
     @PostMapping("/consume/records")
@@ -275,5 +296,98 @@ public class QueryController {
             @Parameter(description = "页码") @RequestParam(defaultValue = "1") Integer pageNum,
             @Parameter(description = "每页条数") @RequestParam(defaultValue = "10") Integer pageSize) {
         return Result.success(exceptionHandleService.queryIdempotentRecords(processStatus, pageNum, pageSize));
+    }
+
+    @Operation(summary = "经营驾驶舱总览", description = "获取总部会员权益经营驾驶舱总览数据，含汇总卡片、门店排名、活动排名、等级分布、异常门店、趋势数据")
+    @PostMapping("/dashboard/operation")
+    public Result<OperationDashboardVO> getOperationDashboard(
+            @Parameter(description = "经营驾驶舱查询请求", required = true)
+            @Valid @RequestBody DashboardQueryDTO dto) {
+        return Result.success(dashboardService.getOperationDashboard(dto));
+    }
+
+    @Operation(summary = "异常门店列表", description = "获取异常波动门店列表，包含核销突增、退款突增、风险突增、预算超支、核销率下降等异常类型")
+    @PostMapping("/dashboard/abnormal-stores")
+    public Result<List<AbnormalStoreVO>> getAbnormalStores(
+            @Parameter(description = "经营驾驶舱查询请求", required = true)
+            @RequestBody DashboardQueryDTO dto) {
+        return Result.success(dashboardService.getAbnormalStores(dto));
+    }
+
+    @Operation(summary = "趋势数据", description = "获取近N天的每日趋势数据，包含发券、核销、退款、风险、预算等指标")
+    @PostMapping("/dashboard/trend")
+    public Result<List<DailyDashboardItemVO>> getTrendData(
+            @Parameter(description = "经营驾驶舱查询请求", required = true)
+            @RequestBody DashboardQueryDTO dto) {
+        return Result.success(dashboardService.getTrendData(dto));
+    }
+
+    @Operation(summary = "门店任务看板（总部视角）", description = "总部查看指定门店的任务看板，含待处理数、各类型统计和任务列表")
+    @PostMapping("/store-task/board")
+    public Result<StoreTaskBoardVO> getStoreTaskBoard(
+            @Parameter(description = "查询条件", required = true)
+            @RequestBody StoreTaskQueryDTO dto) {
+        return Result.success(storeTaskService.getStoreTaskBoard(dto));
+    }
+
+    @Operation(summary = "创建灰度规则", description = "创建权益规则灰度发布规则，保存旧规则配置用于回滚")
+    @PostMapping("/gray/create")
+    public Result<GrayRuleVO> createGrayRule(
+            @Parameter(description = "创建灰度规则请求", required = true)
+            @Valid @RequestBody GrayRuleCreateDTO dto) {
+        return Result.success(grayService.createGrayRule(dto));
+    }
+
+    @Operation(summary = "开始灰度", description = "启动灰度发布，状态从草稿变为灰度中")
+    @PostMapping("/gray/start")
+    public Result<Void> startGray(
+            @Parameter(description = "灰度操作请求", required = true)
+            @Valid @RequestBody GrayActionDTO dto) {
+        grayService.startGray(dto.getGrayRuleId(), dto.getOperator());
+        return Result.success();
+    }
+
+    @Operation(summary = "全量发布", description = "灰度规则全量发布，将新规则同步到活动主配置")
+    @PostMapping("/gray/full-release")
+    public Result<Void> fullRelease(
+            @Parameter(description = "灰度操作请求", required = true)
+            @Valid @RequestBody GrayActionDTO dto) {
+        grayService.fullRelease(dto.getGrayRuleId(), dto.getOperator());
+        return Result.success();
+    }
+
+    @Operation(summary = "一键回滚", description = "灰度规则一键回滚，恢复原规则配置")
+    @PostMapping("/gray/rollback")
+    public Result<Void> rollback(
+            @Parameter(description = "灰度操作请求", required = true)
+            @Valid @RequestBody GrayActionDTO dto) {
+        grayService.rollback(dto.getGrayRuleId(), dto.getOperator());
+        return Result.success();
+    }
+
+    @Operation(summary = "灰度效果对比", description = "查看灰度组与对照组的效果对比数据")
+    @PostMapping("/gray/effect")
+    public Result<GrayEffectVO> getGrayEffect(
+            @Parameter(description = "灰度效果查询请求", required = true)
+            @Valid @RequestBody GrayEffectQueryDTO dto) {
+        return Result.success(grayService.getGrayEffect(dto));
+    }
+
+    @Operation(summary = "灰度规则详情", description = "查看单个灰度规则的详细信息")
+    @GetMapping("/gray/{id}")
+    public Result<GrayRuleVO> getGrayRule(
+            @Parameter(description = "灰度规则ID", required = true)
+            @PathVariable("id") Long id) {
+        return Result.success(grayService.getGrayRule(id));
+    }
+
+    @Operation(summary = "灰度规则列表", description = "分页查询灰度规则列表")
+    @PostMapping("/gray/list")
+    public Result<IPage<GrayRuleVO>> listGrayRules(
+            @Parameter(description = "活动ID") @RequestParam(required = false) Long activityId,
+            @Parameter(description = "状态: 0草稿 1灰度中 2已全量 3已回滚") @RequestParam(required = false) Integer status,
+            @Parameter(description = "页码") @RequestParam(defaultValue = "1") Integer pageNum,
+            @Parameter(description = "每页条数") @RequestParam(defaultValue = "10") Integer pageSize) {
+        return Result.success(grayService.listGrayRules(activityId, status, pageNum, pageSize));
     }
 }

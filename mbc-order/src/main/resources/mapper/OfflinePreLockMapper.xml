@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.order.mapper.OfflinePreLockMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.order.entity.OfflinePreLock">
+        <id column="id" property="id"/>
+        <result column="offline_lock_no" property="offlineLockNo"/>
+        <result column="store_code" property="storeCode"/>
+        <result column="pos_code" property="posCode"/>
+        <result column="cashier" property="cashier"/>
+        <result column="member_id" property="memberId"/>
+        <result column="order_no" property="orderNo"/>
+        <result column="use_no" property="useNo"/>
+        <result column="benefit_type" property="benefitType"/>
+        <result column="coupon_ids" property="couponIds"/>
+        <result column="used_points" property="usedPoints"/>
+        <result column="total_benefit_value" property="totalBenefitValue"/>
+        <result column="order_amount" property="orderAmount"/>
+        <result column="pre_lock_time" property="preLockTime"/>
+        <result column="sync_time" property="syncTime"/>
+        <result column="sync_status" property="syncStatus"/>
+        <result column="sync_retry_count" property="syncRetryCount"/>
+        <result column="sync_error_msg" property="syncErrorMsg"/>
+        <result column="is_idempotent" property="isIdempotent"/>
+        <result column="operator" property="operator"/>
+        <result column="remark" property="remark"/>
+        <result column="create_time" property="createTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, offline_lock_no, store_code, pos_code, cashier, member_id, order_no, use_no,
+        benefit_type, coupon_ids, used_points, total_benefit_value, order_amount,
+        pre_lock_time, sync_time, sync_status, sync_retry_count, sync_error_msg,
+        is_idempotent, operator, remark, create_time, create_by, update_time, update_by, is_deleted
+    </sql>
+
+    <select id="selectByOfflineLockNo" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM t_offline_pre_lock
+        WHERE offline_lock_no = #{offlineLockNo}
+          AND is_deleted = 0
+    </select>
+
+    <select id="selectByStoreAndStatus" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM t_offline_pre_lock
+        WHERE is_deleted = 0
+        <if test="storeCode != null and storeCode != ''">
+            AND store_code = #{storeCode}
+        </if>
+        <if test="syncStatus != null">
+            AND sync_status = #{syncStatus}
+        </if>
+        ORDER BY create_time DESC
+    </select>
+
+</mapper>

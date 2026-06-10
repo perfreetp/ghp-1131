@@ -19,6 +19,7 @@ import com.smartretail.mbc.common.enums.PointSourceEnum;
 import com.smartretail.mbc.common.enums.RiskSceneEnum;
 import com.smartretail.mbc.common.exception.BusinessException;
 import com.smartretail.mbc.common.service.RiskCheckService;
+import com.smartretail.mbc.common.service.GrayHitService;
 import com.smartretail.mbc.common.util.RedisKeyUtil;
 import com.smartretail.mbc.common.vo.RiskCheckResultVO;
 import com.smartretail.mbc.coupon.entity.CouponInstance;
@@ -99,6 +100,9 @@ public class OrderServiceImpl implements OrderService {
     private final PointService pointService;
     private final LevelService levelService;
     private final RiskCheckService riskCheckService;
+
+    @org.springframework.context.annotation.Lazy
+    private final GrayHitService grayHitService;
 
     private static final String ORDER_CREATE_KEY = "mbc:order:create:";
     private static final int IDEMPOTENT_EXPIRE_MINUTES = 30;
@@ -880,7 +884,47 @@ public class OrderServiceImpl implements OrderService {
         result.setErrors(errors);
         result.setValid(errors.isEmpty());
 
+        recordGrayMetricForPosValidate(dto, result);
+
         return result;
+    }
+
+    private void recordGrayMetricForPosValidate(PosOrderValidateDTO dto, PosValidateResultVO result) {
+        if (grayHitService == null || dto == null || result == null
+                || !Boolean.TRUE.equals(result.getValid())
+                || CollectionUtils.isEmpty(result.getFinalCouponIds())) {
+            return;
+        }
+        try {
+            Set<Long> activityIds = new HashSet<>();
+            for (Long couponId : result.getFinalCouponIds()) {
+                CouponInstance instance = couponInstanceMapper.selectById(couponId);
+                if (instance != null) {
+                    CouponTemplate template = couponTemplateMapper.selectById(instance.getTemplateId());
+                    if (template != null && template.getActivityId() != null) {
+                        activityIds.add(template.getActivityId());
+                    }
+                }
+            }
+
+            Long memberId = dto.getMemberId();
+            String storeCode = dto.getStoreCode();
+            String posType = dto.getPosType() != null ? String.valueOf(dto.getPosType()) : null;
+
+            for (Long activityId : activityIds) {
+                boolean hitGray = grayHitService.checkGrayHit(
+                        activityId, memberId, storeCode, null, posType);
+                int groupType = hitGray ? 1 : 2;
+                grayHitService.recordGrayMetric(
+                        activityId, memberId, storeCode, groupType,
+                        0, result.getFinalCouponIds().size(),
+                        result.getFinalCouponAmount() != null ? result.getFinalCouponAmount() : BigDecimal.ZERO,
+                        1,
+                        result.getOriginalAmount() != null ? result.getOriginalAmount() : BigDecimal.ZERO);
+            }
+        } catch (Exception e) {
+            log.warn("记录灰度核销指标失败", e);
+        }
     }
 
     @Override

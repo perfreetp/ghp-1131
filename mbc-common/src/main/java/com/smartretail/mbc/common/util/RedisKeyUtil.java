@@ -22,6 +22,8 @@ public class RedisKeyUtil {
 
     private static final String RISK_PREFIX = MBC_PREFIX + KEY_SEPARATOR + "risk";
 
+    private static final String OFFLINE_PREFIX = MBC_PREFIX + KEY_SEPARATOR + "offline";
+
     public static String memberCode(String memberCode) {
         return MEMBER_PREFIX + KEY_SEPARATOR + "code" + KEY_SEPARATOR + memberCode;
     }
@@ -84,5 +86,9 @@ public class RedisKeyUtil {
 
     public static String riskCount(Integer scene, String identity) {
         return RISK_PREFIX + KEY_SEPARATOR + "count" + KEY_SEPARATOR + scene + KEY_SEPARATOR + identity;
+    }
+
+    public static String offlineSync(String offlineLockNo) {
+        return OFFLINE_PREFIX + KEY_SEPARATOR + "sync" + KEY_SEPARATOR + offlineLockNo;
     }
 }

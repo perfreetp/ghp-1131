@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.query.mapper.GrayRuleMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.query.entity.GrayRule">
+        <id column="id" property="id"/>
+        <result column="gray_code" property="grayCode"/>
+        <result column="gray_name" property="grayName"/>
+        <result column="activity_id" property="activityId"/>
+        <result column="gray_type" property="grayType"/>
+        <result column="gray_config" property="grayConfig"/>
+        <result column="rule_content" property="ruleContent"/>
+        <result column="original_rule_content" property="originalRuleContent"/>
+        <result column="gray_ratio" property="grayRatio"/>
+        <result column="status" property="status"/>
+        <result column="start_gray_time" property="startGrayTime"/>
+        <result column="full_release_time" property="fullReleaseTime"/>
+        <result column="rollback_time" property="rollbackTime"/>
+        <result column="operator" property="operator"/>
+        <result column="description" property="description"/>
+        <result column="create_time" property="createTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, gray_code, gray_name, activity_id, gray_type, gray_config, rule_content,
+        original_rule_content, gray_ratio, status, start_gray_time, full_release_time,
+        rollback_time, operator, description, create_time, create_by, update_time,
+        update_by, is_deleted
+    </sql>
+
+</mapper>

@@ -3,15 +3,21 @@ package com.smartretail.mbc.member.controller;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.smartretail.mbc.common.result.Result;
 import com.smartretail.mbc.member.dto.StoreQueryDTO;
+import com.smartretail.mbc.member.dto.StoreTaskHandleDTO;
+import com.smartretail.mbc.member.dto.StoreTaskQueryDTO;
 import com.smartretail.mbc.member.service.StoreService;
+import com.smartretail.mbc.member.service.StoreTaskService;
+import com.smartretail.mbc.member.vo.StoreTaskBoardVO;
 import com.smartretail.mbc.member.vo.StoreVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @Tag(name = "门店管理模块")
@@ -21,6 +27,8 @@ import java.util.List;
 public class StoreController {
 
     private final StoreService storeService;
+
+    private final StoreTaskService storeTaskService;
 
     @Operation(summary = "根据ID查询门店", description = "根据门店ID查询门店详情信息")
     @GetMapping("/{id}")
@@ -74,6 +82,37 @@ public class StoreController {
             @Parameter(description = "门店ID", required = true)
             @PathVariable("id") Long id) {
         storeService.delete(id);
+        return Result.success();
+    }
+
+    @Operation(summary = "门店任务看板", description = "获取门店任务看板总览，含待处理数、高优先级数、各类型统计和任务列表")
+    @PostMapping("/task/board")
+    public Result<StoreTaskBoardVO> getTaskBoard(
+            @Parameter(description = "查询条件", required = true)
+            @RequestBody StoreTaskQueryDTO dto) {
+        return Result.success(storeTaskService.getStoreTaskBoard(dto));
+    }
+
+    @Operation(summary = "处理任务", description = "处理门店任务，支持确认处理、标记忽略、转交总部")
+    @PostMapping("/task/handle")
+    public Result<Void> handleTask(
+            @Parameter(description = "任务处理请求", required = true)
+            @Valid @RequestBody StoreTaskHandleDTO dto) {
+        storeTaskService.handleTask(dto);
+        return Result.success();
+    }
+
+    @Operation(summary = "生成当日任务", description = "手动触发生成门店当日任务（定时任务也会自动生成）")
+    @PostMapping("/task/generate")
+    public Result<Void> generateDailyTasks(
+            @Parameter(description = "门店编码", required = true)
+            @RequestParam String storeCode,
+            @Parameter(description = "任务日期")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        if (date == null) {
+            date = LocalDate.now();
+        }
+        storeTaskService.generateDailyTasks(storeCode, date);
         return Result.success();
     }
 }

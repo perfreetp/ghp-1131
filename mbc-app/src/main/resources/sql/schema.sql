@@ -673,3 +673,139 @@ CREATE TABLE `t_reconcile_record` (
     KEY `idx_reconcile_status` (`reconcile_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对账记录表';
 
+-- ============================================================
+-- 21. 门店任务表
+-- ============================================================
+DROP TABLE IF EXISTS `t_store_task`;
+CREATE TABLE `t_store_task` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `task_no`         VARCHAR(64)  NOT NULL COMMENT '任务编号',
+    `store_code`      VARCHAR(32)  NOT NULL COMMENT '门店编码',
+    `store_name`      VARCHAR(128) DEFAULT NULL COMMENT '门店名称',
+    `task_type`       TINYINT      NOT NULL COMMENT '任务类型: 1核销异常 2风控确认 3预算预警 4幂等异常',
+    `biz_type`        TINYINT      DEFAULT NULL COMMENT '业务类型: 1券 2积分 3订单',
+    `biz_id`          VARCHAR(64)  DEFAULT NULL COMMENT '业务ID: 订单号/券ID/风险记录ID等',
+    `title`           VARCHAR(255) NOT NULL COMMENT '任务标题',
+    `description`     VARCHAR(1000) DEFAULT NULL COMMENT '任务描述',
+    `priority`        TINYINT      NOT NULL DEFAULT 2 COMMENT '优先级: 1高 2中 3低',
+    `status`          TINYINT      NOT NULL DEFAULT 0 COMMENT '状态: 0待处理 1处理中 2已处理 3已忽略',
+    `handler`         VARCHAR(64)  DEFAULT NULL COMMENT '处理人',
+    `handle_time`     DATETIME     DEFAULT NULL COMMENT '处理时间',
+    `handle_result`   VARCHAR(500) DEFAULT NULL COMMENT '处理结果描述',
+    `source`          VARCHAR(32)  NOT NULL DEFAULT 'system' COMMENT '来源: system/headquarters/store',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `create_by`       VARCHAR(64)  DEFAULT 'system' COMMENT '创建人',
+    `update_by`       VARCHAR(64)  DEFAULT 'system' COMMENT '更新人',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0 COMMENT '是否删除: 0否 1是',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_task_no` (`task_no`),
+    KEY `idx_store_code` (`store_code`),
+    KEY `idx_task_type` (`task_type`),
+    KEY `idx_status` (`status`),
+    KEY `idx_priority` (`priority`),
+    KEY `idx_biz_id` (`biz_id`),
+    KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店任务表';
+
+-- ============================================================
+-- 22. 离线预锁记录表
+-- ============================================================
+DROP TABLE IF EXISTS `t_offline_pre_lock`;
+CREATE TABLE `t_offline_pre_lock` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `offline_lock_no` VARCHAR(64)  NOT NULL COMMENT '离线锁号',
+    `store_code`      VARCHAR(32)  DEFAULT NULL COMMENT '门店编码',
+    `pos_code`        VARCHAR(32)  DEFAULT NULL COMMENT '收银设备号',
+    `cashier`         VARCHAR(64)  DEFAULT NULL COMMENT '收银员',
+    `member_id`       BIGINT       DEFAULT NULL COMMENT '会员ID',
+    `order_no`        VARCHAR(64)  DEFAULT NULL COMMENT '正式订单号',
+    `benefit_type`    INT          DEFAULT NULL COMMENT '权益类型: 1券 2积分 3组合',
+    `coupon_ids`      VARCHAR(500) DEFAULT NULL COMMENT '券ID列表JSON',
+    `used_points`     INT          DEFAULT 0 COMMENT '使用积分数',
+    `total_benefit_value` DECIMAL(15,2) DEFAULT NULL COMMENT '权益总金额',
+    `order_amount`    DECIMAL(15,2) DEFAULT NULL COMMENT '订单金额',
+    `pre_lock_time`   DATETIME     NOT NULL COMMENT '预锁时间',
+    `sync_time`       DATETIME     DEFAULT NULL COMMENT '同步时间',
+    `sync_status`     TINYINT      NOT NULL DEFAULT 0 COMMENT '同步状态: 0待同步 1同步中 2同步成功 3同步失败',
+    `sync_retry_count` INT         DEFAULT 0 COMMENT '重试次数',
+    `sync_error_msg`  VARCHAR(500) DEFAULT NULL COMMENT '同步错误信息',
+    `is_idempotent`   TINYINT      DEFAULT 0 COMMENT '是否幂等: 0否 1是',
+    `operator`        VARCHAR(64)  DEFAULT NULL COMMENT '操作人',
+    `use_no`          VARCHAR(64)  DEFAULT NULL COMMENT '权益使用编号',
+    `remark`          VARCHAR(500)  DEFAULT NULL,
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_offline_lock_no` (`offline_lock_no`),
+    KEY `idx_store_code` (`store_code`),
+    KEY `idx_sync_status` (`sync_status`),
+    KEY `idx_order_no` (`order_no`),
+    KEY `idx_pre_lock_time` (`pre_lock_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线预锁记录表';
+
+-- ============================================================
+-- 23. 灰度规则表
+-- ============================================================
+DROP TABLE IF EXISTS `t_gray_rule`;
+CREATE TABLE `t_gray_rule` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `gray_code`       VARCHAR(64)  NOT NULL COMMENT '灰度规则编码',
+    `gray_name`       VARCHAR(128) NOT NULL COMMENT '灰度规则名称',
+    `activity_id`     BIGINT       NOT NULL COMMENT '关联活动ID',
+    `gray_type`       TINYINT      NOT NULL COMMENT '灰度类型: 1城市 2门店 3人群 4设备',
+    `gray_config`     TEXT         DEFAULT NULL COMMENT '灰度配置JSON',
+    `rule_content`    TEXT         DEFAULT NULL COMMENT '新规则内容JSON',
+    `original_rule_content` TEXT   DEFAULT NULL COMMENT '原规则内容JSON',
+    `gray_ratio`      INT          DEFAULT 10 COMMENT '灰度流量比例 0-100',
+    `status`          TINYINT      NOT NULL DEFAULT 0 COMMENT '状态: 0草稿 1灰度中 2已全量 3已回滚',
+    `start_gray_time` DATETIME     DEFAULT NULL COMMENT '开始灰度时间',
+    `full_release_time` DATETIME   DEFAULT NULL COMMENT '全量发布时间',
+    `rollback_time`   DATETIME     DEFAULT NULL COMMENT '回滚时间',
+    `operator`        VARCHAR(64)  DEFAULT NULL COMMENT '操作人',
+    `description`     VARCHAR(500) DEFAULT NULL,
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_gray_code` (`gray_code`),
+    KEY `idx_activity_id` (`activity_id`),
+    KEY `idx_status` (`status`),
+    KEY `idx_gray_type` (`gray_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='灰度规则表';
+
+-- ============================================================
+-- 24. 灰度指标表
+-- ============================================================
+DROP TABLE IF EXISTS `t_gray_metric`;
+CREATE TABLE `t_gray_metric` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `gray_rule_id`    BIGINT       NOT NULL COMMENT '灰度规则ID',
+    `group_type`      TINYINT      NOT NULL COMMENT '分组: 1灰度组 2对照组',
+    `stat_date`       DATE         NOT NULL COMMENT '统计日期',
+    `member_count`    INT          DEFAULT 0 COMMENT '会员数',
+    `receive_count`   INT          DEFAULT 0 COMMENT '领券数',
+    `redeem_count`    INT          DEFAULT 0 COMMENT '核销数',
+    `redeem_amount`   DECIMAL(15,2) DEFAULT 0 COMMENT '核销金额',
+    `order_count`     INT          DEFAULT 0 COMMENT '订单数',
+    `order_amount`    DECIMAL(15,2) DEFAULT 0 COMMENT '订单金额',
+    `refund_count`    INT          DEFAULT 0 COMMENT '退款数',
+    `refund_amount`   DECIMAL(15,2) DEFAULT 0 COMMENT '退款金额',
+    `conversion_rate` DECIMAL(10,4) DEFAULT 0 COMMENT '转化率',
+    `avg_order_amount` DECIMAL(15,2) DEFAULT 0 COMMENT '客单价',
+    `redeem_rate`     DECIMAL(10,4) DEFAULT 0 COMMENT '核销率',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_gray_date_group` (`gray_rule_id`, `stat_date`, `group_type`),
+    KEY `idx_stat_date` (`stat_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='灰度指标表';
+

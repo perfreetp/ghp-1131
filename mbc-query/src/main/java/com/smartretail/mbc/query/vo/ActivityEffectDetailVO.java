@@ -39,6 +39,9 @@ public class ActivityEffectDetailVO extends Activity {
     @Schema(description = "预算进度")
     private ActivityBudgetProgressVO budgetProgress;
 
+    @Schema(description = "灰度效果数据")
+    private GrayEffectVO grayEffect;
+
     @Data
     @Schema(description = "人群信息")
     public static class CrowdInfo {

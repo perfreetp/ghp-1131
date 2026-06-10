@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.query.mapper.DashboardMapper">
+
+    <select id="selectDashboardSummary" resultType="java.util.Map">
+        SELECT
+            COALESCE(ci.coupon_count, 0) AS totalCouponCount,
+            COALESCE(bul.redeem_count, 0) AS totalRedeemCount,
+            COALESCE(bul.redeem_amount, 0) AS totalRedeemAmount,
+            COALESCE(co.refund_count, 0) AS totalRefundCount,
+            COALESCE(co.refund_amount, 0) AS totalRefundAmount,
+            COALESCE(rr.risk_count, 0) AS totalRiskCount,
+            COALESCE(ab.used_budget, 0) AS totalBudgetUsed,
+            COALESCE(ab.total_budget, 0) - COALESCE(ab.used_budget, 0) AS totalBudgetRemain,
+            CASE WHEN COALESCE(ab.total_budget, 0) &gt; 0
+                 THEN ROUND(COALESCE(ab.used_budget, 0) / ab.total_budget * 100, 2)
+                 ELSE 0 END AS budgetUsageRate,
+            CASE WHEN COALESCE(ci.coupon_count, 0) &gt; 0
+                 THEN ROUND(COALESCE(bul.redeem_count, 0) / ci.coupon_count * 100, 2)
+                 ELSE 0 END AS redeemRate,
+            CASE WHEN COALESCE(bul.redeem_count, 0) &gt; 0
+                 THEN ROUND(COALESCE(co.refund_count, 0) / bul.redeem_count * 100, 2)
+                 ELSE 0 END AS refundRate
+        FROM (SELECT 1 AS dummy) d
+        LEFT JOIN (
+            SELECT COUNT(*) AS coupon_count
+            FROM t_coupon_instance
+            WHERE receive_time &gt;= #{startDate}
+              AND receive_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+        ) ci ON 1=1
+        LEFT JOIN (
+            SELECT COUNT(*) AS redeem_count,
+                   COALESCE(SUM(benefit_value), 0) AS redeem_amount
+            FROM t_benefit_use_log
+            WHERE use_status = 2
+              AND confirm_time &gt;= #{startDate}
+              AND confirm_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+        ) bul ON 1=1
+        LEFT JOIN (
+            SELECT COUNT(*) AS refund_count,
+                   COALESCE(SUM(refund_amount), 0) AS refund_amount
+            FROM t_consume_order
+            WHERE order_status = 5
+              AND refund_time &gt;= #{startDate}
+              AND refund_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+        ) co ON 1=1
+        LEFT JOIN (
+            SELECT COUNT(*) AS risk_count
+            FROM t_risk_record
+            WHERE handle_result = 3
+              AND create_time &gt;= #{startDate}
+              AND create_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+        ) rr ON 1=1
+        LEFT JOIN (
+            SELECT COALESCE(SUM(total_budget), 0) AS total_budget,
+                   COALESCE(SUM(used_budget), 0) AS used_budget
+            FROM t_activity_budget
+            WHERE store_code IS NULL
+              AND is_deleted = 0
+        ) ab ON 1=1
+    </select>
+
+    <select id="selectStoreDashboard" resultType="java.util.Map">
+        SELECT
+            s.store_code AS storeCode,
+            s.store_name AS storeName,
+            s.store_level AS storeLevel,
+            s.city,
+            s.province,
+            COALESCE(ci.coupon_count, 0) AS couponCount,
+            COALESCE(bul.redeem_count, 0) AS redeemCount,
+            COALESCE(bul.redeem_amount, 0) AS redeemAmount,
+            COALESCE(co.refund_count, 0) AS refundCount,
+            COALESCE(co.refund_amount, 0) AS refundAmount,
+            COALESCE(rr.risk_count, 0) AS riskCount,
+            COALESCE(ab.used_budget, 0) AS budgetUsed,
+            COALESCE(ab.total_budget, 0) AS budgetTotal,
+            CASE WHEN COALESCE(ab.total_budget, 0) &gt; 0
+                 THEN ROUND(COALESCE(ab.used_budget, 0) / ab.total_budget * 100, 2)
+                 ELSE 0 END AS budgetUsageRate,
+            CASE WHEN COALESCE(ci.coupon_count, 0) &gt; 0
+                 THEN ROUND(COALESCE(bul.redeem_count, 0) / ci.coupon_count * 100, 2)
+                 ELSE 0 END AS redeemRate
+        FROM t_store_info s
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS coupon_count
+            FROM t_coupon_instance
+            WHERE receive_time &gt;= #{startDate}
+              AND receive_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) ci ON s.store_code = ci.store_code
+        LEFT JOIN (
+            SELECT store_code,
+                   COUNT(*) AS redeem_count,
+                   COALESCE(SUM(benefit_value), 0) AS redeem_amount
+            FROM t_benefit_use_log
+            WHERE use_status = 2
+              AND confirm_time &gt;= #{startDate}
+              AND confirm_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) bul ON s.store_code = bul.store_code
+        LEFT JOIN (
+            SELECT store_code,
+                   COUNT(*) AS refund_count,
+                   COALESCE(SUM(refund_amount), 0) AS refund_amount
+            FROM t_consume_order
+            WHERE order_status = 5
+              AND refund_time &gt;= #{startDate}
+              AND refund_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) co ON s.store_code = co.store_code
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS risk_count
+            FROM t_risk_record
+            WHERE handle_result = 3
+              AND create_time &gt;= #{startDate}
+              AND create_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) rr ON s.store_code = rr.store_code
+        LEFT JOIN (
+            SELECT store_code,
+                   COALESCE(SUM(total_budget), 0) AS total_budget,
+                   COALESCE(SUM(used_budget), 0) AS used_budget
+            FROM t_activity_budget
+            WHERE store_code IS NOT NULL
+              AND is_deleted = 0
+            GROUP BY store_code
+        ) ab ON s.store_code = ab.store_code
+        WHERE s.status = 1
+          AND s.is_deleted = 0
+        <if test="storeCode != null and storeCode != ''">
+            AND s.store_code = #{storeCode}
+        </if>
+        <if test="city != null and city != ''">
+            AND s.city = #{city}
+        </if>
+        <if test="province != null and province != ''">
+            AND s.province = #{province}
+        </if>
+        ORDER BY redeemAmount DESC
+    </select>
+
+    <select id="selectActivityDashboard" resultType="java.util.Map">
+        SELECT
+            a.id AS activityId,
+            a.activity_code AS activityCode,
+            a.activity_name AS activityName,
+            a.activity_type AS activityType,
+            COALESCE(ci.coupon_count, 0) AS couponCount,
+            COALESCE(bul.redeem_count, 0) AS redeemCount,
+            COALESCE(bul.redeem_amount, 0) AS redeemAmount,
+            COALESCE(a.driven_order_count, 0) AS drivenOrderCount,
+            COALESCE(a.driven_order_amount, 0) AS drivenOrderAmount,
+            COALESCE(ab.used_budget, 0) AS budgetUsed,
+            COALESCE(ab.total_budget, 0) AS budgetTotal,
+            CASE WHEN COALESCE(ab.total_budget, 0) &gt; 0
+                 THEN ROUND(COALESCE(ab.used_budget, 0) / ab.total_budget * 100, 2)
+                 ELSE 0 END AS budgetUsageRate,
+            a.status AS status,
+            DATEDIFF(a.end_time, NOW()) AS daysLeft
+        FROM t_activity a
+        LEFT JOIN (
+            SELECT ct.activity_id, COUNT(*) AS coupon_count
+            FROM t_coupon_instance ci
+            INNER JOIN t_coupon_template ct ON ci.template_id = ct.id AND ct.is_deleted = 0
+            WHERE ci.receive_time &gt;= #{startDate}
+              AND ci.receive_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND ci.is_deleted = 0
+            GROUP BY ct.activity_id
+        ) ci ON a.id = ci.activity_id
+        LEFT JOIN (
+            SELECT benefit_id,
+                   COUNT(*) AS redeem_count,
+                   COALESCE(SUM(benefit_value), 0) AS redeem_amount
+            FROM t_benefit_use_log
+            WHERE use_status = 2
+              AND confirm_time &gt;= #{startDate}
+              AND confirm_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND benefit_type = 1
+              AND is_deleted = 0
+            GROUP BY benefit_id
+        ) bul ON a.id = bul.benefit_id
+        LEFT JOIN (
+            SELECT activity_id,
+                   COALESCE(SUM(total_budget), 0) AS total_budget,
+                   COALESCE(SUM(used_budget), 0) AS used_budget
+            FROM t_activity_budget
+            WHERE store_code IS NULL
+              AND is_deleted = 0
+            GROUP BY activity_id
+        ) ab ON a.id = ab.activity_id
+        WHERE a.is_deleted = 0
+        <if test="activityId != null">
+            AND a.id = #{activityId}
+        </if>
+        ORDER BY redeemAmount DESC
+    </select>
+
+    <select id="selectLevelDashboard" resultType="java.util.Map">
+        SELECT
+            m.level_code AS levelCode,
+            COALESCE(mc.member_count, 0) AS memberCount,
+            COALESCE(ci.coupon_count, 0) AS couponCount,
+            COALESCE(bul.redeem_count, 0) AS redeemCount,
+            COALESCE(bul.redeem_amount, 0) AS redeemAmount,
+            CASE WHEN COALESCE(mc.member_count, 0) &gt; 0
+                 THEN ROUND(COALESCE(ci.coupon_count, 0) / mc.member_count, 2)
+                 ELSE 0 END AS avgCouponPerMember
+        FROM (
+            SELECT DISTINCT level_code
+            FROM t_member
+            WHERE is_deleted = 0
+            <if test="levelCode != null">
+                AND level_code = #{levelCode}
+            </if>
+        ) m
+        LEFT JOIN (
+            SELECT level_code, COUNT(*) AS member_count
+            FROM t_member
+            WHERE is_deleted = 0
+            <if test="levelCode != null">
+                AND level_code = #{levelCode}
+            </if>
+            GROUP BY level_code
+        ) mc ON m.level_code = mc.level_code
+        LEFT JOIN (
+            SELECT mm.level_code, COUNT(*) AS coupon_count
+            FROM t_coupon_instance ci
+            INNER JOIN t_member mm ON ci.member_id = mm.id AND mm.is_deleted = 0
+            WHERE ci.receive_time &gt;= #{startDate}
+              AND ci.receive_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND ci.is_deleted = 0
+            <if test="levelCode != null">
+                AND mm.level_code = #{levelCode}
+            </if>
+            GROUP BY mm.level_code
+        ) ci ON m.level_code = ci.level_code
+        LEFT JOIN (
+            SELECT mm.level_code,
+                   COUNT(*) AS redeem_count,
+                   COALESCE(SUM(bul.benefit_value), 0) AS redeem_amount
+            FROM t_benefit_use_log bul
+            INNER JOIN t_member mm ON bul.member_id = mm.id AND mm.is_deleted = 0
+            WHERE bul.use_status = 2
+              AND bul.confirm_time &gt;= #{startDate}
+              AND bul.confirm_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND bul.is_deleted = 0
+            <if test="levelCode != null">
+                AND mm.level_code = #{levelCode}
+            </if>
+            GROUP BY mm.level_code
+        ) bul ON m.level_code = bul.level_code
+        ORDER BY m.level_code
+    </select>
+
+    <select id="selectDailyDashboard" resultType="java.util.Map">
+        SELECT
+            d.stat_date AS statDate,
+            COALESCE(ci.coupon_count, 0) AS couponCount,
+            COALESCE(bul.redeem_count, 0) AS redeemCount,
+            COALESCE(bul.redeem_amount, 0) AS redeemAmount,
+            COALESCE(co.refund_count, 0) AS refundCount,
+            COALESCE(co.refund_amount, 0) AS refundAmount,
+            COALESCE(rr.risk_count, 0) AS riskCount,
+            COALESCE(abl.budget_used, 0) AS budgetUsed
+        FROM (
+            SELECT DATE(#{startDate}) + INTERVAL (t.n) DAY AS stat_date
+            FROM (
+                SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
+                UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11
+                UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15
+                UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19
+                UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23
+                UNION ALL SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27
+                UNION ALL SELECT 28 UNION ALL SELECT 29 UNION ALL SELECT 30 UNION ALL SELECT 31
+            ) t
+            WHERE DATE(#{startDate}) + INTERVAL t.n DAY &lt;= #{endDate}
+        ) d
+        LEFT JOIN (
+            SELECT DATE(receive_time) AS stat_date, COUNT(*) AS coupon_count
+            FROM t_coupon_instance
+            WHERE receive_time &gt;= #{startDate}
+              AND receive_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+            GROUP BY DATE(receive_time)
+        ) ci ON d.stat_date = ci.stat_date
+        LEFT JOIN (
+            SELECT DATE(confirm_time) AS stat_date,
+                   COUNT(*) AS redeem_count,
+                   COALESCE(SUM(benefit_value), 0) AS redeem_amount
+            FROM t_benefit_use_log
+            WHERE use_status = 2
+              AND confirm_time &gt;= #{startDate}
+              AND confirm_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+            GROUP BY DATE(confirm_time)
+        ) bul ON d.stat_date = bul.stat_date
+        LEFT JOIN (
+            SELECT DATE(refund_time) AS stat_date,
+                   COUNT(*) AS refund_count,
+                   COALESCE(SUM(refund_amount), 0) AS refund_amount
+            FROM t_consume_order
+            WHERE order_status = 5
+              AND refund_time &gt;= #{startDate}
+              AND refund_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+            GROUP BY DATE(refund_time)
+        ) co ON d.stat_date = co.stat_date
+        LEFT JOIN (
+            SELECT DATE(create_time) AS stat_date, COUNT(*) AS risk_count
+            FROM t_risk_record
+            WHERE handle_result = 3
+              AND create_time &gt;= #{startDate}
+              AND create_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+            GROUP BY DATE(create_time)
+        ) rr ON d.stat_date = rr.stat_date
+        LEFT JOIN (
+            SELECT DATE(create_time) AS stat_date,
+                   COALESCE(SUM(change_amount), 0) AS budget_used
+            FROM t_activity_budget_log
+            WHERE change_type IN (1, 2, 3)
+              AND create_time &gt;= #{startDate}
+              AND create_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              AND is_deleted = 0
+            GROUP BY DATE(create_time)
+        ) abl ON d.stat_date = abl.stat_date
+        ORDER BY d.stat_date
+    </select>
+
+    <select id="selectYesterdayStoreStats" resultType="java.util.Map">
+        SELECT
+            s.store_code AS storeCode,
+            s.store_name AS storeName,
+            s.city,
+            COALESCE(bul.redeem_count, 0) AS redeemCount,
+            COALESCE(co.refund_count, 0) AS refundCount,
+            COALESCE(rr.risk_count, 0) AS riskCount,
+            CASE WHEN COALESCE(ci.coupon_count, 0) &gt; 0
+                 THEN ROUND(COALESCE(bul.redeem_count, 0) / ci.coupon_count * 100, 2)
+                 ELSE 0 END AS redeemRate,
+            COALESCE(ab.budget_usage_rate, 0) AS budgetUsageRate
+        FROM t_store_info s
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS coupon_count
+            FROM t_coupon_instance
+            WHERE DATE(receive_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) ci ON s.store_code = ci.store_code
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS redeem_count
+            FROM t_benefit_use_log
+            WHERE use_status = 2
+              AND DATE(confirm_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) bul ON s.store_code = bul.store_code
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS refund_count
+            FROM t_consume_order
+            WHERE order_status = 5
+              AND DATE(refund_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) co ON s.store_code = co.store_code
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS risk_count
+            FROM t_risk_record
+            WHERE handle_result = 3
+              AND DATE(create_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) rr ON s.store_code = rr.store_code
+        LEFT JOIN (
+            SELECT ab.store_code,
+                   CASE WHEN SUM(ab.total_budget) &gt; 0
+                        THEN ROUND(SUM(ab.used_budget) / SUM(ab.total_budget) * 100, 2)
+                        ELSE 0 END AS budget_usage_rate
+            FROM t_activity_budget ab
+            WHERE ab.store_code IS NOT NULL
+              AND ab.is_deleted = 0
+            GROUP BY ab.store_code
+        ) ab ON s.store_code = ab.store_code
+        WHERE s.status = 1
+          AND s.is_deleted = 0
+    </select>
+
+    <select id="selectTodayStoreStats" resultType="java.util.Map">
+        SELECT
+            s.store_code AS storeCode,
+            s.store_name AS storeName,
+            s.city,
+            COALESCE(bul.redeem_count, 0) AS redeemCount,
+            COALESCE(co.refund_count, 0) AS refundCount,
+            COALESCE(rr.risk_count, 0) AS riskCount,
+            CASE WHEN COALESCE(ci.coupon_count, 0) &gt; 0
+                 THEN ROUND(COALESCE(bul.redeem_count, 0) / ci.coupon_count * 100, 2)
+                 ELSE 0 END AS redeemRate,
+            COALESCE(ab.budget_usage_rate, 0) AS budgetUsageRate
+        FROM t_store_info s
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS coupon_count
+            FROM t_coupon_instance
+            WHERE DATE(receive_time) = CURDATE()
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) ci ON s.store_code = ci.store_code
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS redeem_count
+            FROM t_benefit_use_log
+            WHERE use_status = 2
+              AND DATE(confirm_time) = CURDATE()
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) bul ON s.store_code = bul.store_code
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS refund_count
+            FROM t_consume_order
+            WHERE order_status = 5
+              AND DATE(refund_time) = CURDATE()
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) co ON s.store_code = co.store_code
+        LEFT JOIN (
+            SELECT store_code, COUNT(*) AS risk_count
+            FROM t_risk_record
+            WHERE handle_result = 3
+              AND DATE(create_time) = CURDATE()
+              AND is_deleted = 0
+              AND store_code IS NOT NULL
+            GROUP BY store_code
+        ) rr ON s.store_code = rr.store_code
+        LEFT JOIN (
+            SELECT ab.store_code,
+                   CASE WHEN SUM(ab.total_budget) &gt; 0
+                        THEN ROUND(SUM(ab.used_budget) / SUM(ab.total_budget) * 100, 2)
+                        ELSE 0 END AS budget_usage_rate
+            FROM t_activity_budget ab
+            WHERE ab.store_code IS NOT NULL
+              AND ab.is_deleted = 0
+            GROUP BY ab.store_code
+        ) ab ON s.store_code = ab.store_code
+        WHERE s.status = 1
+          AND s.is_deleted = 0
+    </select>
+
+</mapper>

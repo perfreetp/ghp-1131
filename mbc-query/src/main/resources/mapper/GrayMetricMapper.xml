@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.query.mapper.GrayMetricMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.query.entity.GrayMetric">
+        <id column="id" property="id"/>
+        <result column="gray_rule_id" property="grayRuleId"/>
+        <result column="group_type" property="groupType"/>
+        <result column="stat_date" property="statDate"/>
+        <result column="member_count" property="memberCount"/>
+        <result column="receive_count" property="receiveCount"/>
+        <result column="redeem_count" property="redeemCount"/>
+        <result column="redeem_amount" property="redeemAmount"/>
+        <result column="order_count" property="orderCount"/>
+        <result column="order_amount" property="orderAmount"/>
+        <result column="refund_count" property="refundCount"/>
+        <result column="refund_amount" property="refundAmount"/>
+        <result column="conversion_rate" property="conversionRate"/>
+        <result column="avg_order_amount" property="avgOrderAmount"/>
+        <result column="create_time" property="createTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, gray_rule_id, group_type, stat_date, member_count, receive_count, redeem_count,
+        redeem_amount, order_count, order_amount, refund_count, refund_amount,
+        conversion_rate, avg_order_amount, create_time, create_by, update_time,
+        update_by, is_deleted
+    </sql>
+
+    <select id="selectByGrayRuleIdAndDateRange" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM t_gray_metric
+        WHERE gray_rule_id = #{grayRuleId}
+          AND is_deleted = 0
+          <if test="startDate != null">
+              AND stat_date >= #{startDate}
+          </if>
+          <if test="endDate != null">
+              AND stat_date <= #{endDate}
+          </if>
+        ORDER BY stat_date ASC
+    </select>
+
+    <select id="selectAggregatedByGrayRuleIdAndGroupType" resultMap="BaseResultMap">
+        SELECT
+            0 AS id,
+            #{grayRuleId} AS gray_rule_id,
+            #{groupType} AS group_type,
+            NULL AS stat_date,
+            SUM(member_count) AS member_count,
+            SUM(receive_count) AS receive_count,
+            SUM(redeem_count) AS redeem_count,
+            SUM(redeem_amount) AS redeem_amount,
+            SUM(order_count) AS order_count,
+            SUM(order_amount) AS order_amount,
+            SUM(refund_count) AS refund_count,
+            SUM(refund_amount) AS refund_amount,
+            CASE WHEN SUM(receive_count) > 0
+                 THEN SUM(redeem_count) * 100.0 / SUM(receive_count)
+                 ELSE 0 END AS conversion_rate,
+            CASE WHEN SUM(order_count) > 0
+                 THEN SUM(order_amount) / SUM(order_count)
+                 ELSE 0 END AS avg_order_amount
+        FROM t_gray_metric
+        WHERE gray_rule_id = #{grayRuleId}
+          AND group_type = #{groupType}
+          AND is_deleted = 0
+          <if test="startDate != null">
+              AND stat_date >= #{startDate}
+          </if>
+          <if test="endDate != null">
+              AND stat_date <= #{endDate}
+          </if>
+    </select>
+
+</mapper>

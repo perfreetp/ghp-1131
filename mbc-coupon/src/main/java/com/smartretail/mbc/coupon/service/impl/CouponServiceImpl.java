@@ -8,6 +8,7 @@ import com.smartretail.mbc.common.enums.CouponStatusEnum;
 import com.smartretail.mbc.common.enums.CouponTypeEnum;
 import com.smartretail.mbc.common.exception.BusinessException;
 import com.smartretail.mbc.common.service.BudgetOccupyService;
+import com.smartretail.mbc.common.service.GrayHitService;
 import com.smartretail.mbc.common.util.RedisKeyUtil;
 import com.smartretail.mbc.coupon.dto.*;
 import com.smartretail.mbc.coupon.entity.CouponInstance;
@@ -49,6 +50,9 @@ public class CouponServiceImpl implements CouponService {
 
     @Lazy
     private final BudgetOccupyService budgetOccupyService;
+
+    @Lazy
+    private final GrayHitService grayHitService;
 
     private static final String INSTANCE_NO_PREFIX = "CI";
     private static final int BATCH_SIZE = 500;
@@ -302,6 +306,8 @@ public class CouponServiceImpl implements CouponService {
             }
         }
 
+        recordGrayMetricAfterReceive(template, dto.getMemberId());
+
         result.setSuccess(true);
         result.setInstanceId(instance.getId());
         result.setInstanceNo(instance.getInstanceNo());
@@ -313,6 +319,22 @@ public class CouponServiceImpl implements CouponService {
         Random random = new Random();
         int randomPart = 10000 + random.nextInt(90000);
         return INSTANCE_NO_PREFIX + timePart + randomPart;
+    }
+
+    private void recordGrayMetricAfterReceive(CouponTemplate template, Long memberId) {
+        if (template == null || template.getActivityId() == null || grayHitService == null) {
+            return;
+        }
+        try {
+            boolean hitGray = grayHitService.checkGrayHit(
+                    template.getActivityId(), memberId, null, null, null);
+            int groupType = hitGray ? 1 : 2;
+            grayHitService.recordGrayMetric(
+                    template.getActivityId(), memberId, null, groupType,
+                    1, 0, BigDecimal.ZERO, 0, BigDecimal.ZERO);
+        } catch (Exception e) {
+            log.warn("记录灰度领券指标失败, templateId: {}, memberId: {}", template.getId(), memberId, e);
+        }
     }
 
     @Override
