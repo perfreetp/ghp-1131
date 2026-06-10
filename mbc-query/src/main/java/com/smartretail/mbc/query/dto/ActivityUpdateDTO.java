@@ -69,4 +69,7 @@ public class ActivityUpdateDTO {
 
     @Schema(description = "活动状态：0草稿 1进行中 2已结束 3已取消")
     private Integer status;
+
+    @Schema(description = "关联人群组ID")
+    private Long crowdGroupId;
 }

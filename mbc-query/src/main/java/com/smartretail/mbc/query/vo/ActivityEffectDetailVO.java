@@ -30,6 +30,26 @@ public class ActivityEffectDetailVO extends Activity {
     @Schema(description = "退款影响分析")
     private RefundImpact refundImpact;
 
+    @Schema(description = "关联人群信息")
+    private CrowdInfo crowdInfo;
+
+    @Schema(description = "人群效果对比列表")
+    private List<CrowdEffectCompareVO> crowdEffectList;
+
+    @Data
+    @Schema(description = "人群信息")
+    public static class CrowdInfo {
+
+        @Schema(description = "人群ID")
+        private Long crowdId;
+
+        @Schema(description = "人群名称")
+        private String crowdName;
+
+        @Schema(description = "人群总人数")
+        private Integer totalCount;
+    }
+
     @Data
     @Schema(description = "效果摘要")
     public static class EffectSummary {

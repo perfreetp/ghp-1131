@@ -31,10 +31,9 @@ import com.smartretail.mbc.point.dto.PointUnfreezeDTO;
 import com.smartretail.mbc.point.service.PointService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -58,7 +57,7 @@ public class BenefitServiceImpl implements BenefitService {
     private final CouponInstanceMapper couponInstanceMapper;
     private final CouponTemplateMapper couponTemplateMapper;
     private final MemberMapper memberMapper;
-    private final RedissonClient redissonClient;
+    private final StringRedisTemplate stringRedisTemplate;
 
     @Lazy
     @Autowired
@@ -77,6 +76,10 @@ public class BenefitServiceImpl implements BenefitService {
     private static final int LOCK_EXPIRE_MINUTES = 30;
     private static final String USE_NO_PREFIX = "BU";
 
+    private static final int PROCESS_STATUS_PROCESSING = 1;
+    private static final int PROCESS_STATUS_COMPLETED = 2;
+    private static final int PROCESS_STATUS_FAILED = 3;
+
     private final Map<Integer, BigDecimal> levelDiscountMap = new HashMap<>();
 
     {
@@ -90,16 +93,91 @@ public class BenefitServiceImpl implements BenefitService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public BenefitLockResultVO lockBenefits(BenefitLockDTO dto) {
-        String lockKey = "mbc:lock:benefit:order:" + dto.getOrderNo();
-        RLock lock = redissonClient.getLock(lockKey);
+        String requestId = UUID.randomUUID().toString();
+        String idemLockKey = RedisKeyUtil.idemBenefitLock(dto.getOrderNo()) + ":" + dto.getBenefitType();
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(idemLockKey, lockValue, 30, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
+            LambdaQueryWrapper<BenefitUseLog> queryWrapper = new LambdaQueryWrapper<>();
+            queryWrapper.eq(BenefitUseLog::getOrderNo, dto.getOrderNo())
+                    .eq(BenefitUseLog::getBenefitType, dto.getBenefitType())
+                    .eq(BenefitUseLog::getUseStatus, USE_STATUS_LOCKED);
+            List<BenefitUseLog> existLogs = benefitUseLogMapper.selectList(queryWrapper);
+            if (!CollectionUtils.isEmpty(existLogs)) {
+                return buildLockIdempotentResult(existLogs, requestId);
+            }
+            BenefitLockResultVO result = new BenefitLockResultVO();
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_PROCESSING);
+            result.setBenefitType(dto.getBenefitType());
+            return result;
+        }
         try {
-            lock.lock(30, TimeUnit.SECONDS);
-            return doLockBenefits(dto);
+            LambdaQueryWrapper<BenefitUseLog> queryWrapper = new LambdaQueryWrapper<>();
+            queryWrapper.eq(BenefitUseLog::getOrderNo, dto.getOrderNo())
+                    .eq(BenefitUseLog::getBenefitType, dto.getBenefitType())
+                    .eq(BenefitUseLog::getUseStatus, USE_STATUS_LOCKED);
+            List<BenefitUseLog> existLogs = benefitUseLogMapper.selectList(queryWrapper);
+            if (!CollectionUtils.isEmpty(existLogs)) {
+                return buildLockIdempotentResult(existLogs, requestId);
+            }
+
+            BenefitLockResultVO result = doLockBenefits(dto);
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_COMPLETED);
+            return result;
         } finally {
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
+            String currentValue = stringRedisTemplate.opsForValue().get(idemLockKey);
+            if (lockValue.equals(currentValue)) {
+                stringRedisTemplate.delete(idemLockKey);
             }
         }
+    }
+
+    private BenefitLockResultVO buildLockIdempotentResult(List<BenefitUseLog> logs, String requestId) {
+        BenefitLockResultVO result = new BenefitLockResultVO();
+        BenefitUseLog firstLog = logs.get(0);
+        result.setUseNo(firstLog.getUseNo());
+        result.setBenefitType(firstLog.getBenefitType());
+        result.setIdempotent(true);
+        result.setRequestId(requestId);
+        result.setProcessStatus(PROCESS_STATUS_COMPLETED);
+
+        BigDecimal totalBenefitValue = BigDecimal.ZERO;
+        List<Long> couponIds = new ArrayList<>();
+        Integer usedPoints = 0;
+        BigDecimal levelDiscountSaved = BigDecimal.ZERO;
+
+        for (BenefitUseLog log : logs) {
+            if (log.getBenefitValue() != null) {
+                totalBenefitValue = totalBenefitValue.add(log.getBenefitValue());
+            }
+            if ((BENEFIT_TYPE_COUPON == log.getBenefitType() || BENEFIT_TYPE_EXCHANGE == log.getBenefitType())
+                    && log.getBenefitId() != null) {
+                couponIds.add(log.getBenefitId());
+            }
+            if (BENEFIT_TYPE_POINT == log.getBenefitType() && log.getUsedPoints() != null) {
+                usedPoints = log.getUsedPoints();
+            }
+            if (BENEFIT_TYPE_LEVEL == log.getBenefitType() && log.getBenefitValue() != null) {
+                levelDiscountSaved = log.getBenefitValue();
+            }
+        }
+
+        result.setBenefitValue(totalBenefitValue);
+        if (!couponIds.isEmpty()) {
+            result.setReducedCouponIds(couponIds);
+        }
+        if (usedPoints > 0) {
+            result.setUsedPoints(usedPoints);
+        }
+        if (levelDiscountSaved.compareTo(BigDecimal.ZERO) > 0) {
+            result.setLevelDiscountSaved(levelDiscountSaved);
+        }
+
+        return result;
     }
 
     private BenefitLockResultVO doLockBenefits(BenefitLockDTO dto) {
@@ -300,6 +378,84 @@ public class BenefitServiceImpl implements BenefitService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public BenefitConfirmResultVO confirmBenefits(BenefitConfirmDTO dto) {
+        String requestId = UUID.randomUUID().toString();
+        String idemKey = RedisKeyUtil.idemBenefitConfirm(dto.getOrderNo() != null ? dto.getOrderNo() : dto.getUseNo());
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(idemKey, lockValue, 30, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
+            LambdaQueryWrapper<BenefitUseLog> queryWrapper = buildConfirmQueryWrapper(dto);
+            queryWrapper.eq(BenefitUseLog::getUseStatus, USE_STATUS_CONFIRMED);
+            List<BenefitUseLog> confirmedLogs = benefitUseLogMapper.selectList(queryWrapper);
+            if (!CollectionUtils.isEmpty(confirmedLogs)) {
+                return buildConfirmIdempotentResult(confirmedLogs, requestId);
+            }
+            BenefitConfirmResultVO result = new BenefitConfirmResultVO();
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_PROCESSING);
+            return result;
+        }
+        try {
+            LambdaQueryWrapper<BenefitUseLog> confirmedQueryWrapper = buildConfirmQueryWrapper(dto);
+            confirmedQueryWrapper.eq(BenefitUseLog::getUseStatus, USE_STATUS_CONFIRMED);
+            List<BenefitUseLog> confirmedLogs = benefitUseLogMapper.selectList(confirmedQueryWrapper);
+            if (!CollectionUtils.isEmpty(confirmedLogs)) {
+                return buildConfirmIdempotentResult(confirmedLogs, requestId);
+            }
+
+            LambdaQueryWrapper<BenefitUseLog> returnedQueryWrapper = buildConfirmQueryWrapper(dto);
+            returnedQueryWrapper.eq(BenefitUseLog::getUseStatus, USE_STATUS_RETURNED);
+            List<BenefitUseLog> returnedLogs = benefitUseLogMapper.selectList(returnedQueryWrapper);
+            if (!CollectionUtils.isEmpty(returnedLogs)) {
+                throw new BusinessException("已退还的权益不能再确认");
+            }
+
+            BenefitConfirmResultVO result = doConfirmBenefits(dto);
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_COMPLETED);
+            return result;
+        } finally {
+            String currentValue = stringRedisTemplate.opsForValue().get(idemKey);
+            if (lockValue.equals(currentValue)) {
+                stringRedisTemplate.delete(idemKey);
+            }
+        }
+    }
+
+    private LambdaQueryWrapper<BenefitUseLog> buildConfirmQueryWrapper(BenefitConfirmDTO dto) {
+        LambdaQueryWrapper<BenefitUseLog> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(BenefitUseLog::getMemberId, dto.getMemberId());
+        if (StringUtils.hasText(dto.getUseNo())) {
+            queryWrapper.eq(BenefitUseLog::getUseNo, dto.getUseNo());
+        }
+        if (StringUtils.hasText(dto.getOrderNo())) {
+            queryWrapper.eq(BenefitUseLog::getOrderNo, dto.getOrderNo());
+        }
+        return queryWrapper;
+    }
+
+    private BenefitConfirmResultVO buildConfirmIdempotentResult(List<BenefitUseLog> logs, String requestId) {
+        BenefitConfirmResultVO result = new BenefitConfirmResultVO();
+        result.setUseNo(logs.get(0).getUseNo());
+        result.setOrderNo(logs.get(0).getOrderNo());
+        result.setConfirmed(true);
+        result.setDetailList(logs);
+        result.setIdempotent(true);
+        result.setRequestId(requestId);
+        result.setProcessStatus(PROCESS_STATUS_COMPLETED);
+
+        BigDecimal totalBenefitValue = BigDecimal.ZERO;
+        for (BenefitUseLog log : logs) {
+            if (log.getBenefitValue() != null) {
+                totalBenefitValue = totalBenefitValue.add(log.getBenefitValue());
+            }
+        }
+        result.setTotalBenefitValue(totalBenefitValue);
+        return result;
+    }
+
+    private BenefitConfirmResultVO doConfirmBenefits(BenefitConfirmDTO dto) {
         LambdaQueryWrapper<BenefitUseLog> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(BenefitUseLog::getMemberId, dto.getMemberId())
                 .eq(BenefitUseLog::getUseStatus, USE_STATUS_LOCKED);
@@ -390,6 +546,70 @@ public class BenefitServiceImpl implements BenefitService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public List<BenefitUseVO> returnBenefits(BenefitReturnDTO dto) {
+        String requestId = UUID.randomUUID().toString();
+        String idemKey = RedisKeyUtil.idemBenefitReturn(dto.getRefundNo());
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(idemKey, lockValue, 30, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
+            List<BenefitUseLog> returnedLogs = queryReturnedLogs(dto);
+            if (!CollectionUtils.isEmpty(returnedLogs)) {
+                return buildReturnIdempotentResult(returnedLogs, requestId);
+            }
+            List<BenefitUseVO> resultList = new ArrayList<>();
+            BenefitUseVO vo = new BenefitUseVO();
+            vo.setIdempotent(false);
+            vo.setRequestId(requestId);
+            vo.setProcessStatus(PROCESS_STATUS_PROCESSING);
+            resultList.add(vo);
+            return resultList;
+        }
+        try {
+            List<BenefitUseLog> returnedLogs = queryReturnedLogs(dto);
+            if (!CollectionUtils.isEmpty(returnedLogs)) {
+                return buildReturnIdempotentResult(returnedLogs, requestId);
+            }
+
+            List<BenefitUseVO> result = doReturnBenefits(dto);
+            for (BenefitUseVO vo : result) {
+                vo.setIdempotent(false);
+                vo.setRequestId(requestId);
+                vo.setProcessStatus(PROCESS_STATUS_COMPLETED);
+            }
+            return result;
+        } finally {
+            String currentValue = stringRedisTemplate.opsForValue().get(idemKey);
+            if (lockValue.equals(currentValue)) {
+                stringRedisTemplate.delete(idemKey);
+            }
+        }
+    }
+
+    private List<BenefitUseLog> queryReturnedLogs(BenefitReturnDTO dto) {
+        LambdaQueryWrapper<BenefitUseLog> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(BenefitUseLog::getMemberId, dto.getMemberId())
+                .eq(BenefitUseLog::getUseStatus, USE_STATUS_RETURNED);
+        if (StringUtils.hasText(dto.getUseNo())) {
+            queryWrapper.eq(BenefitUseLog::getUseNo, dto.getUseNo());
+        }
+        if (StringUtils.hasText(dto.getOrderNo())) {
+            queryWrapper.eq(BenefitUseLog::getOrderNo, dto.getOrderNo());
+        }
+        return benefitUseLogMapper.selectList(queryWrapper);
+    }
+
+    private List<BenefitUseVO> buildReturnIdempotentResult(List<BenefitUseLog> logs, String requestId) {
+        List<BenefitUseVO> resultList = new ArrayList<>();
+        for (BenefitUseLog log : logs) {
+            BenefitUseVO vo = convertToUseVO(log);
+            vo.setIdempotent(true);
+            vo.setRequestId(requestId);
+            vo.setProcessStatus(PROCESS_STATUS_COMPLETED);
+            resultList.add(vo);
+        }
+        return resultList;
+    }
+
+    private List<BenefitUseVO> doReturnBenefits(BenefitReturnDTO dto) {
         LambdaQueryWrapper<BenefitUseLog> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(BenefitUseLog::getMemberId, dto.getMemberId())
                 .eq(BenefitUseLog::getUseStatus, USE_STATUS_CONFIRMED);

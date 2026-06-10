@@ -19,8 +19,6 @@ import com.smartretail.mbc.member.entity.Member;
 import com.smartretail.mbc.member.mapper.MemberMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -46,7 +44,6 @@ public class CouponServiceImpl implements CouponService {
     private final CouponInstanceMapper couponInstanceMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final MemberMapper memberMapper;
-    private final RedissonClient redissonClient;
 
     private static final String INSTANCE_NO_PREFIX = "CI";
     private static final int BATCH_SIZE = 500;
@@ -160,13 +157,20 @@ public class CouponServiceImpl implements CouponService {
     @Override
     public CouponReceiveResultVO receiveCoupon(CouponReceiveDTO dto) {
         String lockKey = RedisKeyUtil.couponTemplateLock(dto.getTemplateId());
-        RLock lock = redissonClient.getLock(lockKey);
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, lockValue, 10, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
+            CouponReceiveResultVO result = new CouponReceiveResultVO();
+            result.setSuccess(false);
+            result.setFailReason("系统繁忙，请稍后重试");
+            return result;
+        }
         try {
-            lock.lock(10, TimeUnit.SECONDS);
             return doReceiveCoupon(dto);
         } finally {
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
+            String currentValue = stringRedisTemplate.opsForValue().get(lockKey);
+            if (lockValue.equals(currentValue)) {
+                stringRedisTemplate.delete(lockKey);
             }
         }
     }

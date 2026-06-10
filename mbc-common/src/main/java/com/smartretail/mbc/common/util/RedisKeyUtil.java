@@ -55,4 +55,28 @@ public class RedisKeyUtil {
     public static String idempotent(String requestId) {
         return IDEMPOTENT_PREFIX + KEY_SEPARATOR + requestId;
     }
+
+    public static String idemBenefitLock(String orderNo) {
+        return IDEMPOTENT_PREFIX + KEY_SEPARATOR + "benefit" + KEY_SEPARATOR + "lock" + KEY_SEPARATOR + orderNo;
+    }
+
+    public static String idemBenefitConfirm(String orderNo) {
+        return IDEMPOTENT_PREFIX + KEY_SEPARATOR + "benefit" + KEY_SEPARATOR + "confirm" + KEY_SEPARATOR + orderNo;
+    }
+
+    public static String idemBenefitReturn(String refundNo) {
+        return IDEMPOTENT_PREFIX + KEY_SEPARATOR + "benefit" + KEY_SEPARATOR + "return" + KEY_SEPARATOR + refundNo;
+    }
+
+    public static String idemOrderPay(String orderNo) {
+        return IDEMPOTENT_PREFIX + KEY_SEPARATOR + "order" + KEY_SEPARATOR + "pay" + KEY_SEPARATOR + orderNo;
+    }
+
+    public static String idemOrderComplete(String orderNo) {
+        return IDEMPOTENT_PREFIX + KEY_SEPARATOR + "order" + KEY_SEPARATOR + "complete" + KEY_SEPARATOR + orderNo;
+    }
+
+    public static String idemOrderRefund(String refundNo) {
+        return IDEMPOTENT_PREFIX + KEY_SEPARATOR + "order" + KEY_SEPARATOR + "refund" + KEY_SEPARATOR + refundNo;
+    }
 }

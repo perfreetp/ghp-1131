@@ -72,4 +72,19 @@ public class CouponTemplateCreateDTO {
 
     @Schema(description = "关联活动ID")
     private Long activityId;
+
+    @Schema(description = "适用门店编码列表(逗号分隔，空=全部适用)")
+    private String applyStoreCodes;
+
+    @Schema(description = "排除门店编码列表(逗号分隔)")
+    private String excludeStoreCodes;
+
+    @Schema(description = "适用业态列表(逗号分隔，如\"1,2,3\"，空=全业态)")
+    private String applyBusinessTypes;
+
+    @Schema(description = "适用收银设备类型(逗号分隔，空=全部支持)")
+    private String applyPosTypes;
+
+    @Schema(description = "门店限制模式：0=白名单模式 1=黑名单模式")
+    private Integer storeLimitFlag;
 }

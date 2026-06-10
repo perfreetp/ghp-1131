@@ -58,4 +58,14 @@ public class CouponTemplate extends BaseEntity {
     private Integer status;
 
     private Long activityId;
+
+    private String applyStoreCodes;
+
+    private String excludeStoreCodes;
+
+    private String applyBusinessTypes;
+
+    private String applyPosTypes;
+
+    private Integer storeLimitFlag;
 }

@@ -43,6 +43,12 @@ public class PosOrderValidateDTO {
     @NotBlank(message = "门店编码不能为空")
     private String storeCode;
 
+    @Schema(description = "业态编码（可由后端根据storeCode补全）")
+    private Integer businessType;
+
+    @Schema(description = "收银设备类型编码")
+    private Integer posType;
+
     @Schema(description = "POS编码")
     private String posCode;
 

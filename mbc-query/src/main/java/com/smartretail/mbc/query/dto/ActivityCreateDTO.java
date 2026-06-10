@@ -71,4 +71,7 @@ public class ActivityCreateDTO {
 
     @Schema(description = "活动状态：0=草稿")
     private Integer status = 0;
+
+    @Schema(description = "关联人群组ID")
+    private Long crowdGroupId;
 }

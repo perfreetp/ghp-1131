@@ -10,10 +10,13 @@ import com.smartretail.mbc.benefit.entity.BenefitUseLog;
 import com.smartretail.mbc.benefit.mapper.BenefitUseLogMapper;
 import com.smartretail.mbc.benefit.service.BenefitService;
 import com.smartretail.mbc.common.enums.CouponStatusEnum;
+import com.smartretail.mbc.common.enums.BusinessTypeEnum;
+import com.smartretail.mbc.common.enums.PosTypeEnum;
 import com.smartretail.mbc.common.enums.MemberLevelEnum;
 import com.smartretail.mbc.common.enums.OrderStatusEnum;
 import com.smartretail.mbc.common.enums.PointSourceEnum;
 import com.smartretail.mbc.common.exception.BusinessException;
+import com.smartretail.mbc.common.util.RedisKeyUtil;
 import com.smartretail.mbc.coupon.entity.CouponInstance;
 import com.smartretail.mbc.coupon.entity.CouponTemplate;
 import com.smartretail.mbc.coupon.mapper.CouponInstanceMapper;
@@ -23,8 +26,11 @@ import com.smartretail.mbc.level.entity.LevelRule;
 import com.smartretail.mbc.level.mapper.LevelRuleMapper;
 import com.smartretail.mbc.level.service.LevelService;
 import com.smartretail.mbc.member.entity.Member;
+import com.smartretail.mbc.member.entity.StoreInfo;
 import com.smartretail.mbc.member.mapper.MemberMapper;
+import com.smartretail.mbc.member.mapper.StoreInfoMapper;
 import com.smartretail.mbc.member.vo.MemberSimpleVO;
+import com.smartretail.mbc.member.vo.StoreVO;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartretail.mbc.order.dto.OrderCompleteDTO;
@@ -55,6 +61,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -74,6 +82,7 @@ public class OrderServiceImpl implements OrderService {
     private final ConsumeOrderMapper consumeOrderMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final MemberMapper memberMapper;
+    private final StoreInfoMapper storeInfoMapper;
     private final BenefitUseLogMapper benefitUseLogMapper;
     private final CouponInstanceMapper couponInstanceMapper;
     private final CouponTemplateMapper couponTemplateMapper;
@@ -88,6 +97,10 @@ public class OrderServiceImpl implements OrderService {
     private static final BigDecimal MAX_POINT_RATIO = new BigDecimal("0.5");
     private static final int MAX_COUPON_COMBINATION = 3;
 
+    private static final int PROCESS_STATUS_PROCESSING = 1;
+    private static final int PROCESS_STATUS_COMPLETED = 2;
+    private static final int PROCESS_STATUS_FAILED = 3;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
@@ -96,6 +109,30 @@ public class OrderServiceImpl implements OrderService {
         List<String> warnings = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         List<PosValidateResultVO.ItemResultVO> itemResults = new ArrayList<>();
+
+        StoreVO storeInfo = null;
+        Integer businessType = dto.getBusinessType();
+        Integer posType = dto.getPosType();
+        String storeName = dto.getStoreCode();
+
+        if (dto.getStoreCode() != null && !dto.getStoreCode().isEmpty()) {
+            StoreInfo store = storeInfoMapper.selectOne(
+                    new LambdaQueryWrapper<StoreInfo>()
+                            .eq(StoreInfo::getStoreCode, dto.getStoreCode())
+                            .last("LIMIT 1")
+            );
+            if (store != null) {
+                storeInfo = new StoreVO();
+                BeanUtils.copyProperties(store, storeInfo);
+                BusinessTypeEnum typeEnum = BusinessTypeEnum.getByCode(store.getStoreType());
+                if (typeEnum != null) {
+                    storeInfo.setStoreTypeName(typeEnum.getName());
+                }
+                businessType = store.getStoreType();
+                storeName = store.getStoreName();
+            }
+        }
+        result.setStoreInfo(storeInfo);
 
         BigDecimal originalAmount = BigDecimal.ZERO;
         for (OrderItemDTO item : dto.getItems()) {
@@ -257,6 +294,57 @@ public class OrderServiceImpl implements OrderService {
                 trial.setCouponName(template.getCouponName());
                 trial.setCouponType(template.getCouponType());
                 trial.setReduceAmount(template.getReduceAmount() != null ? template.getReduceAmount() : BigDecimal.ZERO);
+
+                boolean storeOk = true;
+                boolean businessOk = true;
+                boolean posOk = true;
+                String unavailableReason = null;
+
+                if (template.getStoreLimitFlag() != null && template.getStoreLimitFlag() == 0) {
+                    if (template.getApplyStoreCodes() != null && !template.getApplyStoreCodes().isEmpty()) {
+                        List<String> applyStoreList = parseCsvList(template.getApplyStoreCodes());
+                        if (!applyStoreList.contains(dto.getStoreCode())) {
+                            storeOk = false;
+                            unavailableReason = "此券不适用于" + storeName + "门店";
+                        }
+                    }
+                } else {
+                    if (template.getExcludeStoreCodes() != null && !template.getExcludeStoreCodes().isEmpty()) {
+                        List<String> excludeStoreList = parseCsvList(template.getExcludeStoreCodes());
+                        if (excludeStoreList.contains(dto.getStoreCode())) {
+                            storeOk = false;
+                            unavailableReason = "此券在" + storeName + "门店不可用";
+                        }
+                    }
+                }
+                trial.setStoreAvailable(storeOk);
+
+                if (storeOk && template.getApplyBusinessTypes() != null && !template.getApplyBusinessTypes().isEmpty()) {
+                    List<Integer> applyBusinessList = parseCsvIntList(template.getApplyBusinessTypes());
+                    if (businessType == null || !applyBusinessList.contains(businessType)) {
+                        businessOk = false;
+                        String businessName = businessType != null ? getBusinessTypeName(businessType) : "未知";
+                        unavailableReason = "此券不适用于" + businessName + "业态";
+                    }
+                }
+                trial.setBusinessAvailable(businessOk);
+
+                if (storeOk && businessOk && template.getApplyPosTypes() != null && !template.getApplyPosTypes().isEmpty()) {
+                    List<Integer> applyPosList = parseCsvIntList(template.getApplyPosTypes());
+                    if (posType == null || !applyPosList.contains(posType)) {
+                        posOk = false;
+                        String posName = posType != null ? getPosTypeName(posType) : "未知";
+                        unavailableReason = "此券在" + posName + "上不可用";
+                    }
+                }
+                trial.setPosAvailable(posOk);
+                trial.setUnavailableReason(unavailableReason);
+
+                if (!storeOk || !businessOk || !posOk) {
+                    trial.setReason(unavailableReason);
+                    couponTrials.add(trial);
+                    continue;
+                }
 
                 Set<String> excludeSkus = new HashSet<>();
                 if (template.getExcludeItems() != null && !template.getExcludeItems().isEmpty()) {
@@ -665,6 +753,50 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderVO payOrder(OrderPayDTO dto) {
+        String requestId = UUID.randomUUID().toString();
+        String idemKey = RedisKeyUtil.idemOrderPay(dto.getOrderNo());
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(idemKey, lockValue, 30, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
+            ConsumeOrder order = consumeOrderMapper.selectByOrderNo(dto.getOrderNo());
+            if (order != null && order.getOrderStatus() >= OrderStatusEnum.PAID.getCode()) {
+                return buildOrderIdempotentResult(order, requestId);
+            }
+            OrderVO result = new OrderVO();
+            result.setOrderNo(dto.getOrderNo());
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_PROCESSING);
+            return result;
+        }
+        try {
+            ConsumeOrder existOrder = consumeOrderMapper.selectByOrderNo(dto.getOrderNo());
+            if (existOrder != null && existOrder.getOrderStatus() >= OrderStatusEnum.PAID.getCode()) {
+                return buildOrderIdempotentResult(existOrder, requestId);
+            }
+
+            OrderVO result = doPayOrder(dto);
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_COMPLETED);
+            return result;
+        } finally {
+            String currentValue = stringRedisTemplate.opsForValue().get(idemKey);
+            if (lockValue.equals(currentValue)) {
+                stringRedisTemplate.delete(idemKey);
+            }
+        }
+    }
+
+    private OrderVO buildOrderIdempotentResult(ConsumeOrder order, String requestId) {
+        OrderVO vo = convertToVO(order);
+        vo.setIdempotent(true);
+        vo.setRequestId(requestId);
+        vo.setProcessStatus(PROCESS_STATUS_COMPLETED);
+        return vo;
+    }
+
+    private OrderVO doPayOrder(OrderPayDTO dto) {
         ConsumeOrder order = consumeOrderMapper.selectByOrderNo(dto.getOrderNo());
         if (order == null) {
             throw new BusinessException("订单不存在");
@@ -719,6 +851,42 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderVO completeOrder(OrderCompleteDTO dto) {
+        String requestId = UUID.randomUUID().toString();
+        String idemKey = RedisKeyUtil.idemOrderComplete(dto.getOrderNo());
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(idemKey, lockValue, 30, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
+            ConsumeOrder order = consumeOrderMapper.selectByOrderNo(dto.getOrderNo());
+            if (order != null && order.getOrderStatus() >= OrderStatusEnum.COMPLETED.getCode()) {
+                return buildOrderIdempotentResult(order, requestId);
+            }
+            OrderVO result = new OrderVO();
+            result.setOrderNo(dto.getOrderNo());
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_PROCESSING);
+            return result;
+        }
+        try {
+            ConsumeOrder existOrder = consumeOrderMapper.selectByOrderNo(dto.getOrderNo());
+            if (existOrder != null && existOrder.getOrderStatus() >= OrderStatusEnum.COMPLETED.getCode()) {
+                return buildOrderIdempotentResult(existOrder, requestId);
+            }
+
+            OrderVO result = doCompleteOrder(dto);
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_COMPLETED);
+            return result;
+        } finally {
+            String currentValue = stringRedisTemplate.opsForValue().get(idemKey);
+            if (lockValue.equals(currentValue)) {
+                stringRedisTemplate.delete(idemKey);
+            }
+        }
+    }
+
+    private OrderVO doCompleteOrder(OrderCompleteDTO dto) {
         ConsumeOrder order = consumeOrderMapper.selectByOrderNo(dto.getOrderNo());
         if (order == null) {
             throw new BusinessException("订单不存在");
@@ -781,6 +949,48 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderVO refundOrder(OrderRefundDTO dto) {
+        String requestId = UUID.randomUUID().toString();
+        String idemKey = RedisKeyUtil.idemOrderRefund(dto.getRefundNo());
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(idemKey, lockValue, 30, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
+            ConsumeOrder refundedOrder = selectOrderByRefundNo(dto.getRefundNo());
+            if (refundedOrder != null) {
+                return buildOrderIdempotentResult(refundedOrder, requestId);
+            }
+            OrderVO result = new OrderVO();
+            result.setOrderNo(dto.getOrderNo());
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_PROCESSING);
+            return result;
+        }
+        try {
+            ConsumeOrder existRefundOrder = selectOrderByRefundNo(dto.getRefundNo());
+            if (existRefundOrder != null) {
+                return buildOrderIdempotentResult(existRefundOrder, requestId);
+            }
+
+            OrderVO result = doRefundOrder(dto);
+            result.setIdempotent(false);
+            result.setRequestId(requestId);
+            result.setProcessStatus(PROCESS_STATUS_COMPLETED);
+            return result;
+        } finally {
+            String currentValue = stringRedisTemplate.opsForValue().get(idemKey);
+            if (lockValue.equals(currentValue)) {
+                stringRedisTemplate.delete(idemKey);
+            }
+        }
+    }
+
+    private ConsumeOrder selectOrderByRefundNo(String refundNo) {
+        LambdaQueryWrapper<ConsumeOrder> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(ConsumeOrder::getRefundNo, refundNo);
+        return consumeOrderMapper.selectOne(queryWrapper);
+    }
+
+    private OrderVO doRefundOrder(OrderRefundDTO dto) {
         ConsumeOrder order = consumeOrderMapper.selectByOrderNo(dto.getOrderNo());
         if (order == null) {
             throw new BusinessException("订单不存在");
@@ -955,5 +1165,51 @@ public class OrderServiceImpl implements OrderService {
         rule.setPointRatio(BigDecimal.ONE);
         rule.setGrowthRatio(BigDecimal.ONE);
         return rule;
+    }
+
+    private List<String> parseCsvList(String csv) {
+        if (csv == null || csv.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>();
+        for (String item : csv.split(",")) {
+            if (!item.trim().isEmpty()) {
+                result.add(item.trim());
+            }
+        }
+        return result;
+    }
+
+    private List<Integer> parseCsvIntList(String csv) {
+        if (csv == null || csv.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Integer> result = new ArrayList<>();
+        for (String item : csv.split(",")) {
+            if (!item.trim().isEmpty()) {
+                try {
+                    result.add(Integer.parseInt(item.trim()));
+                } catch (NumberFormatException e) {
+                    log.warn("解析CSV整数失败: {}", item, e);
+                }
+            }
+        }
+        return result;
+    }
+
+    private String getBusinessTypeName(Integer code) {
+        if (code == null) {
+            return "未知";
+        }
+        BusinessTypeEnum typeEnum = BusinessTypeEnum.getByCode(code);
+        return typeEnum != null ? typeEnum.getName() : "未知";
+    }
+
+    private String getPosTypeName(Integer code) {
+        if (code == null) {
+            return "未知";
+        }
+        PosTypeEnum typeEnum = PosTypeEnum.getByCode(code);
+        return typeEnum != null ? typeEnum.getName() : "未知";
     }
 }

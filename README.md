@@ -338,6 +338,366 @@ curl -X POST http://127.0.0.1:8080/api/mbc/level/birthday/grant \
 
 ---
 
+## 🔗 典型调用链路完整示例 (curl)
+
+假设服务已启动在 `http://127.0.0.1:8080/api/mbc`。
+
+---
+
+### 🛒 链路一：商超收银完整流程（注册→发券→试算→锁定→核销→退款）
+
+```bash
+# ============================================================
+# Step 1 - 注册会员
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/member/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone": "13912345678",
+    "name": "收银测试员",
+    "nickname": "测试小明",
+    "gender": 1,
+    "birthday": "1995-06-15",
+    "registerSource": "POS"
+  }' | python -m json.tool
+
+# 返回示例：{"code":200,"data":{"id":8,"memberCode":"M20250610000008","phone":"13912345678",...}}
+# 记录返回的 memberId (假设为 8) 和 memberCode
+export MEMBER_ID=8
+export MEMBER_CODE=M20250610000008
+
+
+# ============================================================
+# Step 2 - 为新会员发券（运营后台批量发券 / 新人礼包）
+# ============================================================
+# 先查可用的券模板 ID：
+curl -s -X POST http://127.0.0.1:8080/api/mbc/coupon/template/page \
+  -H "Content-Type: application/json" \
+  -d '{"pageNum":1,"pageSize":10,"status":1}' | python -m json.tool
+
+# 给新会员批量发两张券（NEW_USER_10=ID 1, FULL_200_30=ID 2）：
+curl -s -X POST http://127.0.0.1:8080/api/mbc/coupon/batch-issue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberIds": ['$MEMBER_ID'],
+    "templateId": 1,
+    "receiveSource": "REGISTER",
+    "sourceId": "new_user_gift_2025"
+  }' | python -m json.tool
+
+curl -s -X POST http://127.0.0.1:8080/api/mbc/coupon/batch-issue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberIds": ['$MEMBER_ID'],
+    "templateId": 2,
+    "receiveSource": "REGISTER",
+    "sourceId": "new_user_gift_2025"
+  }' | python -m json.tool
+
+# 查一下会员券列表：
+curl -s -X POST http://127.0.0.1:8080/api/mbc/coupon/member/page \
+  -H "Content-Type: application/json" \
+  -d '{"memberId":'$MEMBER_ID',"couponStatus":1,"pageNum":1,"pageSize":10}' | python -m json.tool
+# 记录返回的可用券 instance ID（假设 CI 的 ID 为 9, 10）
+export COUPON_1=9
+export COUPON_2=10
+
+
+# ============================================================
+# Step 3 - 收银端下单完整试算（含商品明细，返回每张券能否使用+原因）
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/pos/validate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberId": '$MEMBER_ID',
+    "items": [
+      {"skuId":"SKU001","skuName":"纯牛奶 250ml*24","quantity":2,"unitPrice":68.00,"subtotal":136.00,"categoryId":"DAIRY"},
+      {"skuId":"SKU002","skuName":"金龙鱼调和油 5L","quantity":1,"unitPrice":99.90,"subtotal":99.90,"categoryId":"OIL"},
+      {"skuId":"SKU003","skuName":"可口可乐 330ml*24","quantity":1,"unitPrice":58.00,"subtotal":58.00,"categoryId":"DRINK"},
+      {"skuId":"SKU004","skuName":"进口牛排 200g","quantity":3,"unitPrice":59.00,"subtotal":177.00,"categoryId":"MEAT"}
+    ],
+    "useCouponIds": ['$COUPON_1', '$COUPON_2'],
+    "tryAllCoupons": true,
+    "usePoints": null,
+    "storeCode": "S001",
+    "posCode": "POS-01",
+    "cashier": "张收银",
+    "channel": "POS"
+  }' | python -m json.tool
+
+# 返回将包含：
+#   couponTrials: 每张券的可用/不可用及详细原因
+#   bestCouponCombination: 推荐的券组合
+#   maxUsablePoints: 本次最多可用积分数
+#   finalPayAmount: 最终应付金额
+#   earnablePoints/Growth: 本单可得积分与成长值
+
+
+# ============================================================
+# Step 4 - 创建订单（幂等，用唯一orderNo）
+# ============================================================
+export ORDER_NO=POS$(date +%Y%m%d%H%M%S)
+echo "本次订单号: $ORDER_NO"
+
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo": "'$ORDER_NO'",
+    "memberId": '$MEMBER_ID',
+    "orderType": 1,
+    "totalAmount": 470.90,
+    "usedPoints": 200,
+    "usedCouponInstanceIds": ['$COUPON_2'],
+    "storeCode": "S001",
+    "storeName": "朝阳旗舰店",
+    "posCode": "POS-01",
+    "cashier": "张收银",
+    "channel": "POS"
+  }' | python -m json.tool
+
+
+# ============================================================
+# Step 5 - 支付完成 → 自动锁定所有权益（券状态变锁定、积分变冻结）
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/pay \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo": "'$ORDER_NO'",
+    "payAmount": 390.90,
+    "payTime": "'$(date +%Y-%m-%dT%H:%M:%S)'"
+  }' | python -m json.tool
+
+# 可手动查看券状态变化：curl -s http://127.0.0.1:8080/api/mbc/coupon/instance/$COUPON_2 | python -m json.tool
+
+
+# ============================================================
+# Step 6 - 订单完成 → 确认核销所有权益（券标记已使用、积分扣减、发放积分成长值）
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/complete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo": "'$ORDER_NO'"
+  }' | python -m json.tool
+
+# 验证：查会员积分（current_points应该有增长）：
+curl -s http://127.0.0.1:8080/api/mbc/point/account/$MEMBER_ID | python -m json.tool
+# 验证：查成长值等级：
+curl -s http://127.0.0.1:8080/api/mbc/level/current/$MEMBER_ID | python -m json.tool
+
+
+# ============================================================
+# Step 7 - 模拟退款 → 返还所有权益（券重新可用、积分返还）
+# ============================================================
+export REFUND_NO=REF$(date +%Y%m%d%H%M%S)
+
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/refund \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo": "'$ORDER_NO'",
+    "refundNo": "'$REFUND_NO'",
+    "refundAmount": 470.90,
+    "reason": "顾客退货"
+  }' | python -m json.tool
+
+# 验证：券状态是否回滚为"可使用"：
+curl -s http://127.0.0.1:8080/api/mbc/coupon/instance/$COUPON_2 | python -m json.tool
+```
+
+---
+
+### 🎡 链路二：小程序个人中心（身份→权益清单→领券→消息）
+
+```bash
+# ============================================================
+# Step 1 - 小程序身份识别（手机号登录）
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/member/identify \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"13912345678"}' | python -m json.tool
+
+
+# ============================================================
+# Step 2 - 小程序个人中心完整权益总览
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/mini/personal-benefit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberId": '$MEMBER_ID',
+    "couponStatusFilter": [1, 4, 2, 3],
+    "pageNum": 1,
+    "pageSize": 10
+  }' | python -m json.tool
+# 返回：会员卡信息+积分+生日权益状态+等级权益+过期提醒+券列表(分页)+消费统计
+
+
+# ============================================================
+# Step 3 - 小程序领券中心领券
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/coupon/receive \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberId": '$MEMBER_ID',
+    "templateId": 4,
+    "receiveSource": "MINI_APP"
+  }' | python -m json.tool
+# templateId=4 对应"美式咖啡兑换券"
+
+
+# ============================================================
+# Step 4 - 查看领券成功消息通知
+# ============================================================
+curl -s http://127.0.0.1:8080/api/mbc/message/unread/$MEMBER_ID | python -m json.tool
+
+curl -s -X POST http://127.0.0.1:8080/api/mbc/message/query \
+  -H "Content-Type: application/json" \
+  -d '{"memberId":'$MEMBER_ID',"pageNum":1,"pageSize":5}' | python -m json.tool
+```
+
+---
+
+### 👨‍💼 链路三：运营后台（创建活动→查看效果→发放生日权益）
+
+```bash
+# ============================================================
+# Step 1 - 创建618满减券活动
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/activity/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activityCode": "ACT_618_FULL_2025",
+    "activityName": "2025年中大促满减券活动",
+    "activityType": 1,
+    "startTime": "2025-06-01T00:00:00",
+    "endTime": "2025-06-20T23:59:59",
+    "targetLevel": 0,
+    "couponTemplateIds": [1, 2],
+    "budgetCoupons": 50000,
+    "budgetPoints": 100000,
+    "applyScenes": "ALL",
+    "description": "618全场每满200减30，新人额外满100减10",
+    "status": 1
+  }' | python -m json.tool
+# 记录返回的 activityId，假设为 4
+export ACT_ID=4
+
+
+# ============================================================
+# Step 2 - 发布活动（草稿→进行中）
+# ============================================================
+curl -s -X PUT http://127.0.0.1:8080/api/mbc/query/activity/status \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activityId": '$ACT_ID',
+    "targetStatus": 1,
+    "reason": "活动正式上线"
+  }' | python -m json.tool
+
+
+# ============================================================
+# Step 3 - 手动为某会员发放生日权益
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/level/birthday/grant \
+  -H "Content-Type: application/json" \
+  -d '{"memberId": '$MEMBER_ID'}' | python -m json.tool
+
+
+# ============================================================
+# Step 4 - 活动结束后查看详细效果统计（含退款影响）
+# ============================================================
+# 先结束活动：
+curl -s -X PUT http://127.0.0.1:8080/api/mbc/query/activity/status \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activityId": '$ACT_ID',
+    "targetStatus": 2,
+    "reason": "活动正常结束"
+  }' | python -m json.tool
+
+# 查看完整效果（含ROI、券效果明细、等级分布、日趋势、退款影响）：
+curl -s http://127.0.0.1:8080/api/mbc/query/activity/$ACT_ID/effect-detail | python -m json.tool
+
+# 查看活动效果列表：
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/activity/effect-page \
+  -H "Content-Type: application/json" \
+  -d '{"pageNum":1,"pageSize":10}' | python -m json.tool
+
+# 运营大盘总览：
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/dashboard \
+  -H "Content-Type: application/json" \
+  -d '{
+    "startTime": "'$(date -d 'first day of this month' +%Y-%m-%d)'T00:00:00",
+    "endTime": "'$(date +%Y-%m-%d)'T23:59:59"
+  }' | python -m json.tool
+```
+
+---
+
+### 👩‍💼 链路四：客服工具（合并预览→正式合并→查询合并记录）
+
+```bash
+# ============================================================
+# Step 0 - 先制造两个重复会员（同手机号注册两次）
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/member/register \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"13700001111","name":"王小明","nickname":"王A","registerSource":"POS"}' | python -m json.tool
+# 返回ID 假设为 9
+export SRC_MEMBER=9
+
+curl -s -X POST http://127.0.0.1:8080/api/mbc/member/register \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"13700001111","name":"王小明","nickname":"王B","registerSource":"MINI_APP"}' | python -m json.tool
+# 返回ID 假设为 10（因测试脚本未真实防重，实际系统已限制手机号唯一。这里可用测试数据已有的 ID 6,7）
+export TGT_MEMBER=10
+# 若重复注册被拦截，使用测试数据中已有的 6 和 7：
+export SRC_MEMBER=6
+export TGT_MEMBER=7
+
+
+# ============================================================
+# Step 1 - 客服端先做合并预览，看到差异再确认
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/member/merge/preview \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sourceMemberId": '$SRC_MEMBER',
+    "targetMemberId": '$TGT_MEMBER'
+  }' | python -m json.tool
+# 返回内容包括：
+#   sourceMember / targetMember: 双方会员详细信息
+#   diffSummary: 手机号差异、等级差异(如青铜→白银)、可迁移积分/券/成长值数量
+#   mergePreview: 合并后模拟结果（最终积分/等级/券数量/消费统计）
+#   warnings: 风险提示（手机号变更、被合并方等级更高提醒等）
+
+
+# ============================================================
+# Step 2 - 预览确认后执行正式合并
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/member/merge \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sourceMemberId": '$SRC_MEMBER',
+    "targetMemberId": '$TGT_MEMBER',
+    "reason": "同一顾客重复注册，手机号一致",
+    "operator": "客服-李姐"
+  }' | python -m json.tool
+
+
+# ============================================================
+# Step 3 - 查询合并记录
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/member/merge/logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operator": "客服",
+    "pageNum": 1,
+    "pageSize": 10
+  }' | python -m json.tool
+# 或按手机号搜：'{"sourcePhone":"13700001111"}'
+```
+
+---
+
 ## 常见问题
 
 **Q1: 启动时报 `Table 'mbc_center.xxx' doesn't exist`？**
@@ -351,3 +711,81 @@ curl -X POST http://127.0.0.1:8080/api/mbc/level/birthday/grant \
 
 **Q4: 积分变更报「获取分布式锁失败」？**
 → 同一会员并发变更会触发，稍后重试或检查是否有死锁（锁超时10秒自动释放）。
+
+---
+
+## 门店/业态/设备差异化权益策略
+
+### 功能说明
+支持按门店范围、业态类型、收银设备类型差异化配置优惠券适用范围，实现精细化运营。
+
+### 核心能力
+- **门店范围**：支持白名单（指定门店可用）和黑名单（指定门店不可用）两种模式
+- **业态限制**：支持大卖场、便利店、生鲜专区、家电专区、服饰专区、线上商城等多种业态
+- **设备限制**：支持标准POS、自助收银、移动POS、小程序收银、APP收银等设备类型
+- **智能补全**：后端可根据门店编码自动补全业态类型
+
+### 门店表 SQL
+```sql
+CREATE TABLE `t_store_info` (
+    `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `store_code` varchar(64) NOT NULL COMMENT '门店编码(唯一)',
+    `store_name` varchar(128) NOT NULL COMMENT '门店名称',
+    `store_type` int DEFAULT NULL COMMENT '业态类型编码',
+    `store_level` int DEFAULT NULL COMMENT '门店级别',
+    `address` varchar(256) DEFAULT NULL COMMENT '地址',
+    `city` varchar(64) DEFAULT NULL COMMENT '城市',
+    `province` varchar(64) DEFAULT NULL COMMENT '省份',
+    `contact` varchar(32) DEFAULT NULL COMMENT '联系人',
+    `phone` varchar(32) DEFAULT NULL COMMENT '联系电话',
+    `status` tinyint DEFAULT '1' COMMENT '状态：0停用 1启用',
+    `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+    `create_by` varchar(64) DEFAULT NULL COMMENT '创建人',
+    `update_by` varchar(64) DEFAULT NULL COMMENT '更新人',
+    `is_deleted` tinyint DEFAULT '0' COMMENT '是否删除：0否 1是',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_store_code` (`store_code`),
+    KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='门店信息表';
+```
+
+### 券模板扩展字段
+在 `t_coupon_template` 表中新增以下字段：
+```sql
+ALTER TABLE `t_coupon_template`
+    ADD COLUMN `apply_store_codes` varchar(512) DEFAULT NULL COMMENT '适用门店编码列表(逗号分隔，空=全部适用)' AFTER `activity_id`,
+    ADD COLUMN `exclude_store_codes` varchar(512) DEFAULT NULL COMMENT '排除门店编码列表(逗号分隔)' AFTER `apply_store_codes`,
+    ADD COLUMN `apply_business_types` varchar(128) DEFAULT NULL COMMENT '适用业态列表(逗号分隔，空=全业态)' AFTER `exclude_store_codes`,
+    ADD COLUMN `apply_pos_types` varchar(128) DEFAULT NULL COMMENT '适用收银设备类型(逗号分隔，空=全部支持)' AFTER `apply_business_types`,
+    ADD COLUMN `store_limit_flag` tinyint DEFAULT '0' COMMENT '门店限制模式：0=白名单模式 1=黑名单模式' AFTER `apply_pos_types`;
+```
+
+### 业态枚举（BusinessTypeEnum）
+| Code | Name | Desc |
+|------|------|------|
+| 1 | 大卖场 | 大型综合超市 |
+| 2 | 便利店 | 社区便利店 |
+| 3 | 生鲜专区 | 生鲜水果区 |
+| 4 | 家电专区 | 家电商场 |
+| 5 | 服饰专区 | 服装鞋包 |
+| 6 | 线上商城 | 小程序/APP |
+
+### 收银设备枚举（PosTypeEnum）
+| Code | Name | Desc |
+|------|------|------|
+| 1 | 标准POS | 常规收银机 |
+| 2 | 自助收银 | 自助结账机 |
+| 3 | 移动POS | 手持扫码枪 |
+| 4 | 小程序收银 | 线上下单 |
+| 5 | APP收银 | APP下单 |
+
+### 门店管理接口
+- `GET /store/{id}` - 根据ID查询门店
+- `GET /store/by-code/{storeCode}` - 根据编码查询门店
+- `GET /store/list-all` - 查询所有启用门店
+- `POST /store/page` - 分页查询门店列表
+- `POST /store/create` - 新增门店
+- `PUT /store/update` - 更新门店信息
+- `DELETE /store/{id}` - 删除门店
+

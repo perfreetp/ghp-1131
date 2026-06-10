@@ -31,12 +31,17 @@ import com.smartretail.mbc.query.dto.ConsumeRecordQueryDTO;
 import com.smartretail.mbc.query.dto.DashboardStatsDTO;
 import com.smartretail.mbc.query.dto.MiniBenefitQueryDTO;
 import com.smartretail.mbc.query.entity.Activity;
+import com.smartretail.mbc.query.entity.CrowdGroup;
+import com.smartretail.mbc.query.entity.CrowdMember;
 import com.smartretail.mbc.query.mapper.ActivityMapper;
+import com.smartretail.mbc.query.mapper.CrowdGroupMapper;
+import com.smartretail.mbc.query.mapper.CrowdMemberMapper;
 import com.smartretail.mbc.query.mapper.QueryStatsMapper;
 import com.smartretail.mbc.query.service.QueryService;
 import com.smartretail.mbc.query.vo.ActivityEffectDetailVO;
 import com.smartretail.mbc.query.vo.ActivityStatsVO;
 import com.smartretail.mbc.query.vo.ConsumeRecordVO;
+import com.smartretail.mbc.query.vo.CrowdEffectCompareVO;
 import com.smartretail.mbc.query.vo.DashboardStatsVO;
 import com.smartretail.mbc.query.vo.ExpireReminderVO;
 import com.smartretail.mbc.query.vo.LevelBenefitItemVO;
@@ -74,11 +79,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -95,6 +102,8 @@ public class QueryServiceImpl implements QueryService {
     private final CouponInstanceMapper couponInstanceMapper;
     private final CouponTemplateMapper couponTemplateMapper;
     private final BenefitUseLogMapper benefitUseLogMapper;
+    private final CrowdGroupMapper crowdGroupMapper;
+    private final CrowdMemberMapper crowdMemberMapper;
     private final StringRedisTemplate stringRedisTemplate;
 
     private static final BigDecimal PERCENT_100 = new BigDecimal("100");
@@ -895,6 +904,12 @@ public class QueryServiceImpl implements QueryService {
         ActivityEffectDetailVO.RefundImpact refundImpact = buildRefundImpact(activityId, activity.getStartTime(), activity.getEndTime());
         vo.setRefundImpact(refundImpact);
 
+        ActivityEffectDetailVO.CrowdInfo crowdInfo = buildCrowdInfo(activity.getCrowdGroupId());
+        vo.setCrowdInfo(crowdInfo);
+
+        List<CrowdEffectCompareVO> crowdEffectList = buildCrowdEffectList(activity);
+        vo.setCrowdEffectList(crowdEffectList);
+
         return vo;
     }
 
@@ -1052,6 +1067,87 @@ public class QueryServiceImpl implements QueryService {
         impact.setTotalRefundAmount(totalRefundAmount);
         impact.setRefundByReason(new HashMap<>());
         return impact;
+    }
+
+    private ActivityEffectDetailVO.CrowdInfo buildCrowdInfo(Long crowdGroupId) {
+        if (crowdGroupId == null) {
+            return null;
+        }
+        CrowdGroup crowdGroup = crowdGroupMapper.selectById(crowdGroupId);
+        if (crowdGroup == null) {
+            return null;
+        }
+        ActivityEffectDetailVO.CrowdInfo info = new ActivityEffectDetailVO.CrowdInfo();
+        info.setCrowdId(crowdGroup.getId());
+        info.setCrowdName(crowdGroup.getCrowdName());
+        info.setTotalCount(crowdGroup.getActualCount() != null ? crowdGroup.getActualCount() : 0);
+        return info;
+    }
+
+    private List<CrowdEffectCompareVO> buildCrowdEffectList(Activity activity) {
+        List<CrowdEffectCompareVO> result = new ArrayList<>();
+        if (activity.getCrowdGroupId() == null) {
+            return result;
+        }
+        CrowdGroup crowdGroup = crowdGroupMapper.selectById(activity.getCrowdGroupId());
+        if (crowdGroup == null) {
+            return result;
+        }
+
+        CrowdEffectCompareVO vo = new CrowdEffectCompareVO();
+        vo.setCrowdId(crowdGroup.getId());
+        vo.setCrowdName(crowdGroup.getCrowdName());
+
+        Integer memberCount = crowdGroup.getActualCount() != null ? crowdGroup.getActualCount() : 0;
+        vo.setMemberCount(memberCount);
+
+        List<Long> memberIds = crowdMemberMapper.selectMemberIdsByCrowdId(crowdGroup.getId(), null);
+        Set<Long> memberIdSet = new HashSet<>(memberIds);
+
+        Integer participateCount = activity.getParticipatedCount() != null ? activity.getParticipatedCount() : 0;
+        Integer verifyCount = activity.getConvertedCount() != null ? activity.getConvertedCount() : 0;
+        vo.setParticipateCount(participateCount);
+        vo.setVerifyCount(verifyCount);
+
+        if (memberCount > 0) {
+            vo.setParticipateRate(calcPercent(participateCount, memberCount));
+            vo.setVerifyRate(calcPercent(verifyCount, memberCount));
+        } else {
+            vo.setParticipateRate(BigDecimal.ZERO);
+            vo.setVerifyRate(BigDecimal.ZERO);
+        }
+
+        Integer orderCount = activity.getDrivenOrderCount() != null ? activity.getDrivenOrderCount() : 0;
+        BigDecimal orderAmount = activity.getDrivenOrderAmount() != null ? activity.getDrivenOrderAmount() : BigDecimal.ZERO;
+        vo.setOrderCount(orderCount);
+        vo.setOrderAmount(orderAmount);
+
+        if (orderCount > 0) {
+            vo.setAvgOrderAmount(orderAmount.divide(new BigDecimal(orderCount), 2, RoundingMode.HALF_UP));
+        } else {
+            vo.setAvgOrderAmount(BigDecimal.ZERO);
+        }
+
+        Integer costPoints = activity.getUsedPoints() != null ? activity.getUsedPoints() : 0;
+        Integer costCouponCount = activity.getUsedCoupons() != null ? activity.getUsedCoupons() : 0;
+        BigDecimal pointCost = new BigDecimal(costPoints).divide(PERCENT_100, 2, RoundingMode.HALF_UP);
+        BigDecimal couponCost = new BigDecimal(costCouponCount).multiply(COUPON_ESTIMATED_VALUE);
+        BigDecimal totalCost = pointCost.add(couponCost);
+
+        if (memberCount > 0) {
+            vo.setCostValue(totalCost.divide(new BigDecimal(memberCount), 2, RoundingMode.HALF_UP));
+        } else {
+            vo.setCostValue(BigDecimal.ZERO);
+        }
+
+        if (totalCost.compareTo(BigDecimal.ZERO) > 0) {
+            vo.setRoi(orderAmount.divide(totalCost, 2, RoundingMode.HALF_UP));
+        } else {
+            vo.setRoi(BigDecimal.ZERO);
+        }
+
+        result.add(vo);
+        return result;
     }
 
     @Override

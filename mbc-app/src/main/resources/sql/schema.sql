@@ -371,3 +371,114 @@ INSERT INTO `t_coupon_template` (`coupon_code`, `coupon_name`, `coupon_type`, `t
 ('FULL_200_30', '满200减30通用券', 1, 50000, 200.00, 30.00, 1, NULL, 0, 1, 5, '全场通用，满200元减30元', 1),
 ('GOLD_BIRTHDAY', '黄金会员生日50元券', 1, -1, 300.00, 50.00, 2, 30, 3, 0, 1, '黄金以上会员生日专属，满300元可用', 1),
 ('COFFEE_FREE', '美式咖啡兑换券', 2, 5000, NULL, NULL, 2, 15, 0, 1, 3, '凭券可兑换中杯美式咖啡一杯', 1);
+
+-- ============================================================
+-- 12. 门店信息表
+-- ============================================================
+DROP TABLE IF EXISTS `t_store_info`;
+CREATE TABLE `t_store_info` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `store_code`      VARCHAR(64)  NOT NULL COMMENT '门店编码',
+    `store_name`      VARCHAR(128) NOT NULL COMMENT '门店名称',
+    `store_type`      TINYINT      NOT NULL DEFAULT 1 COMMENT '门店类型：1大卖场 2便利店 3生鲜专区 4家电专区 5服饰专区',
+    `store_level`     TINYINT      DEFAULT 1 COMMENT '门店等级：1普通 2标杆 3旗舰',
+    `business_type`   VARCHAR(64)  DEFAULT NULL COMMENT '主营业态(逗号分隔，如1,2,3)',
+    `address`         VARCHAR(255) DEFAULT NULL COMMENT '门店地址',
+    `province`        VARCHAR(32)  DEFAULT NULL,
+    `city`            VARCHAR(32)  DEFAULT NULL,
+    `district`        VARCHAR(32)  DEFAULT NULL,
+    `phone`           VARCHAR(32)  DEFAULT NULL COMMENT '联系电话',
+    `manager`         VARCHAR(64)  DEFAULT NULL COMMENT '店长',
+    `open_time`       VARCHAR(32)  DEFAULT NULL COMMENT '营业时间',
+    `business_area`   DECIMAL(10,2) DEFAULT NULL COMMENT '营业面积(㎡)',
+    `pos_count`       INT          DEFAULT 0 COMMENT '收银台数量',
+    `member_count`    INT          DEFAULT 0 COMMENT '会员数',
+    `status`          TINYINT      NOT NULL DEFAULT 1 COMMENT '状态：0停业 1营业中 2装修中',
+    `remark`          VARCHAR(500) DEFAULT NULL,
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_store_code` (`store_code`),
+    KEY `idx_store_type` (`store_type`),
+    KEY `idx_city` (`city`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店信息表';
+
+-- ============================================================
+-- 13. 人群组表
+-- ============================================================
+DROP TABLE IF EXISTS `t_crowd_group`;
+CREATE TABLE `t_crowd_group` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `crowd_code`      VARCHAR(64)  NOT NULL COMMENT '人群编码',
+    `crowd_name`      VARCHAR(128) NOT NULL COMMENT '人群名称',
+    `crowd_type`      TINYINT      DEFAULT 1 COMMENT '类型：1规则圈选 2手工导入 3活动沉淀',
+    `rule_config`     TEXT         DEFAULT NULL COMMENT '圈选规则配置(JSON数组)',
+    `estimated_count` INT          DEFAULT 0 COMMENT '预估人数',
+    `actual_count`    INT          DEFAULT 0 COMMENT '实际人数',
+    `refresh_type`    TINYINT      DEFAULT 2 COMMENT '刷新方式：1手动 2每日定时',
+    `last_refresh_time` DATETIME   DEFAULT NULL COMMENT '最近刷新时间',
+    `status`          TINYINT      NOT NULL DEFAULT 1 COMMENT '状态：0草稿 1有效 2已失效',
+    `description`     VARCHAR(500) DEFAULT NULL,
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_crowd_code` (`crowd_code`),
+    KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人群组表';
+
+-- ============================================================
+-- 14. 人群成员表
+-- ============================================================
+DROP TABLE IF EXISTS `t_crowd_member`;
+CREATE TABLE `t_crowd_member` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `crowd_id`        BIGINT       NOT NULL COMMENT '人群组ID',
+    `member_id`       BIGINT       NOT NULL COMMENT '会员ID',
+    `member_code`     VARCHAR(64)  DEFAULT NULL COMMENT '会员编码(冗余)',
+    `phone`           VARCHAR(32)  DEFAULT NULL COMMENT '手机号(冗余)',
+    `match_score`     INT          DEFAULT 100 COMMENT '匹配度(0-100)',
+    `match_rules`     VARCHAR(255) DEFAULT NULL COMMENT '命中的规则(逗号分隔)',
+    `join_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '入群时间',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_crowd_member` (`crowd_id`, `member_id`),
+    KEY `idx_member_id` (`member_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人群成员表';
+
+-- ============================================================
+-- 表结构扩展：活动表增加人群关联
+-- ============================================================
+ALTER TABLE `t_activity` ADD COLUMN `crowd_group_id` BIGINT DEFAULT NULL COMMENT '关联人群组ID' AFTER `target_level`;
+ALTER TABLE `t_activity` ADD KEY `idx_crowd_group` (`crowd_group_id`);
+
+-- ============================================================
+-- 表结构扩展：券模板增加门店/业态/设备差异化字段
+-- ============================================================
+ALTER TABLE `t_coupon_template` ADD COLUMN `apply_store_codes` VARCHAR(1000) DEFAULT NULL COMMENT '适用门店编码(逗号分隔)' AFTER `description`;
+ALTER TABLE `t_coupon_template` ADD COLUMN `exclude_store_codes` VARCHAR(1000) DEFAULT NULL COMMENT '排除门店编码(逗号分隔)';
+ALTER TABLE `t_coupon_template` ADD COLUMN `apply_business_types` VARCHAR(255) DEFAULT NULL COMMENT '适用业态(逗号分隔，如1,2,3)';
+ALTER TABLE `t_coupon_template` ADD COLUMN `apply_pos_types` VARCHAR(255) DEFAULT NULL COMMENT '适用收银设备(逗号分隔，如1,2,3)';
+ALTER TABLE `t_coupon_template` ADD COLUMN `store_limit_flag` TINYINT DEFAULT 0 COMMENT '门店限制标志：0全门店 1指定门店 2排除门店';
+
+-- ============================================================
+-- 初始化门店数据
+-- ============================================================
+INSERT INTO `t_store_info` (`store_code`, `store_name`, `store_type`, `store_level`, `business_type`, `address`, `city`, `phone`, `open_time`, `pos_count`, `status`) VALUES
+('STORE001', '朝阳大卖店', 1, 3, '1,3,4', '北京市朝阳区建国路88号', '北京', '010-12345678', '08:00-22:00', 20, 1),
+('STORE002', '海淀便利店', 2, 1, '2', '北京市海淀区中关村大街1号', '北京', '010-23456789', '24小时', 2, 1),
+('STORE003', '丰台生鲜店', 3, 2, '3', '北京市丰台区南三环西路5号', '北京', '010-34567890', '07:00-21:00', 6, 1);
+
+-- ============================================================
+-- 初始化人群组数据
+-- ============================================================
+INSERT INTO `t_crowd_group` (`crowd_code`, `crowd_name`, `crowd_type`, `rule_config`, `estimated_count`, `actual_count`, `refresh_type`, `status`, `description`) VALUES
+('CROWD_HIGH_VALUE', '高价值会员', 1, '[{"ruleType":7,"minAmount":5000,"maxAmount":null}]', 500, 0, 2, 1, '累计消费满5000元的高价值会员'),
+('CROWD_SILENT_30D', '30天未到店', 1, '[{"ruleType":4,"days":30}]', 2000, 0, 2, 1, '最近30天无消费记录的沉睡会员'),
+('CROWD_BIRTHDAY', '本月生日', 1, '[{"ruleType":5}]', 300, 0, 2, 1, '本月生日会员');
+

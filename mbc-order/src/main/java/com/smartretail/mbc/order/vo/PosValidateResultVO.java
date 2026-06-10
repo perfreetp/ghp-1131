@@ -1,6 +1,7 @@
 package com.smartretail.mbc.order.vo;
 
 import com.smartretail.mbc.member.vo.MemberSimpleVO;
+import com.smartretail.mbc.member.vo.StoreVO;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -16,6 +17,9 @@ public class PosValidateResultVO {
 
     @Schema(description = "会员信息")
     private MemberSimpleVO memberInfo;
+
+    @Schema(description = "门店信息")
+    private StoreVO storeInfo;
 
     @Schema(description = "每个商品是否可用券")
     private List<ItemResultVO> itemResults;
@@ -133,6 +137,18 @@ public class PosValidateResultVO {
 
         @Schema(description = "可用原因或不可用原因")
         private String reason;
+
+        @Schema(description = "门店是否可用")
+        private Boolean storeAvailable;
+
+        @Schema(description = "业态是否可用")
+        private Boolean businessAvailable;
+
+        @Schema(description = "设备类型是否可用")
+        private Boolean posAvailable;
+
+        @Schema(description = "不可用原因详情")
+        private String unavailableReason;
 
         @Schema(description = "实际可应用金额")
         private BigDecimal applicableAmount;

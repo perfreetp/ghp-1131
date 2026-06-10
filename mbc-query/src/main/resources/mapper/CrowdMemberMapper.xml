@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.query.mapper.CrowdMemberMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.query.entity.CrowdMember">
+        <id column="id" property="id"/>
+        <result column="crowd_id" property="crowdId"/>
+        <result column="member_id" property="memberId"/>
+        <result column="match_time" property="matchTime"/>
+        <result column="expire_time" property="expireTime"/>
+        <result column="is_active" property="isActive"/>
+        <result column="match_reason" property="matchReason"/>
+        <result column="create_time" property="createTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, crowd_id, member_id, match_time, expire_time, is_active, match_reason,
+        create_time, create_by, update_time, update_by, is_deleted
+    </sql>
+
+    <insert id="batchInsert" parameterType="java.util.List">
+        INSERT INTO t_crowd_member (crowd_id, member_id, match_time, expire_time, is_active, match_reason,
+                                    create_time, create_by, update_time, update_by, is_deleted)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.crowdId}, #{item.memberId}, #{item.matchTime}, #{item.expireTime}, #{item.isActive},
+             #{item.matchReason}, #{item.createTime}, #{item.createBy}, #{item.updateTime}, #{item.updateBy},
+             #{item.isDeleted})
+        </foreach>
+    </insert>
+
+    <select id="countByCrowdId" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM t_crowd_member
+        WHERE crowd_id = #{crowdId}
+          AND is_deleted = 0
+          AND is_active = 1
+    </select>
+
+    <select id="selectMemberIdsByCrowdId" resultType="java.lang.Long">
+        SELECT member_id
+        FROM t_crowd_member
+        WHERE crowd_id = #{crowdId}
+          AND is_deleted = 0
+          AND is_active = 1
+        <if test="limit != null and limit > 0">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+</mapper>

@@ -50,4 +50,6 @@ public class Activity extends BaseEntity {
     private String ruleConfig;
 
     private String description;
+
+    private Long crowdGroupId;
 }

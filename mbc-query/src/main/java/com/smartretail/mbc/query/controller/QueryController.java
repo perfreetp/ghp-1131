@@ -9,8 +9,11 @@ import com.smartretail.mbc.query.dto.ActivityUpdateDTO;
 import com.smartretail.mbc.query.dto.BenefitListQueryDTO;
 import com.smartretail.mbc.query.dto.ConsumeRecordQueryDTO;
 import com.smartretail.mbc.query.dto.DashboardStatsDTO;
+import com.smartretail.mbc.query.dto.MemberTimelineQueryDTO;
 import com.smartretail.mbc.query.dto.MiniBenefitQueryDTO;
+import com.smartretail.mbc.query.service.MemberTimelineService;
 import com.smartretail.mbc.query.service.QueryService;
+import com.smartretail.mbc.query.vo.MemberTimelineVO;
 import com.smartretail.mbc.query.vo.ActivityEffectDetailVO;
 import com.smartretail.mbc.query.vo.ActivityStatsVO;
 import com.smartretail.mbc.query.vo.ConsumeRecordVO;
@@ -37,6 +40,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class QueryController {
 
     private final QueryService queryService;
+
+    private final MemberTimelineService memberTimelineService;
 
     @Operation(summary = "查询消费记录", description = "按会员ID分页查询消费记录，支持时间范围、订单类型、金额、门店筛选")
     @PostMapping("/consume/records")
@@ -126,5 +131,13 @@ public class QueryController {
             @Parameter(description = "小程序权益查询请求", required = true)
             @Valid @RequestBody MiniBenefitQueryDTO dto) {
         return Result.success(queryService.getMiniPersonalBenefit(dto));
+    }
+
+    @Operation(summary = "会员权益时间线", description = "按时间串起所有动作")
+    @PostMapping("/member/timeline")
+    public Result<MemberTimelineVO> getMemberTimeline(
+            @Parameter(description = "会员时间线查询请求", required = true)
+            @Valid @RequestBody MemberTimelineQueryDTO dto) {
+        return Result.success(memberTimelineService.getMemberTimeline(dto));
     }
 }
