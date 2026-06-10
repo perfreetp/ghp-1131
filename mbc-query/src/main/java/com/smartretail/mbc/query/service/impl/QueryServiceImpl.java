@@ -37,6 +37,7 @@ import com.smartretail.mbc.query.mapper.ActivityMapper;
 import com.smartretail.mbc.query.mapper.CrowdGroupMapper;
 import com.smartretail.mbc.query.mapper.CrowdMemberMapper;
 import com.smartretail.mbc.query.mapper.QueryStatsMapper;
+import com.smartretail.mbc.query.service.ActivityBudgetService;
 import com.smartretail.mbc.query.service.QueryService;
 import com.smartretail.mbc.query.vo.ActivityEffectDetailVO;
 import com.smartretail.mbc.query.vo.ActivityStatsVO;
@@ -94,6 +95,7 @@ import java.util.stream.Collectors;
 public class QueryServiceImpl implements QueryService {
 
     private final ActivityMapper activityMapper;
+    private final ActivityBudgetService activityBudgetService;
     private final QueryStatsMapper queryStatsMapper;
     private final ConsumeOrderMapper consumeOrderMapper;
     private final MemberMapper memberMapper;
@@ -909,6 +911,12 @@ public class QueryServiceImpl implements QueryService {
 
         List<CrowdEffectCompareVO> crowdEffectList = buildCrowdEffectList(activity);
         vo.setCrowdEffectList(crowdEffectList);
+
+        try {
+            vo.setBudgetProgress(activityBudgetService.getBudgetProgress(activityId));
+        } catch (Exception e) {
+            log.warn("查询活动预算进度失败, activityId={}", activityId, e);
+        }
 
         return vo;
     }

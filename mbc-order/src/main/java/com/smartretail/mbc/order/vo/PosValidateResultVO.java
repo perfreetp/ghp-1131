@@ -1,5 +1,6 @@
 package com.smartretail.mbc.order.vo;
 
+import com.smartretail.mbc.common.vo.RiskCheckResultVO;
 import com.smartretail.mbc.member.vo.MemberSimpleVO;
 import com.smartretail.mbc.member.vo.StoreVO;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -92,6 +93,9 @@ public class PosValidateResultVO {
 
     @Schema(description = "致命错误，无法结算")
     private List<String> errors;
+
+    @Schema(description = "风控检查结果")
+    private RiskCheckResultVO riskCheck;
 
     @Data
     @Schema(description = "商品试算结果")

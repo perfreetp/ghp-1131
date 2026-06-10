@@ -9,7 +9,9 @@ import com.smartretail.mbc.benefit.dto.BenefitLockDTO;
 import com.smartretail.mbc.benefit.dto.BenefitQueryDTO;
 import com.smartretail.mbc.benefit.dto.BenefitReturnDTO;
 import com.smartretail.mbc.benefit.entity.BenefitUseLog;
+import com.smartretail.mbc.benefit.entity.IdempotentRecord;
 import com.smartretail.mbc.benefit.mapper.BenefitUseLogMapper;
+import com.smartretail.mbc.benefit.mapper.IdempotentRecordMapper;
 import com.smartretail.mbc.benefit.service.BenefitService;
 import com.smartretail.mbc.benefit.vo.BenefitConfirmResultVO;
 import com.smartretail.mbc.benefit.vo.BenefitLockResultVO;
@@ -18,6 +20,7 @@ import com.smartretail.mbc.common.enums.CouponStatusEnum;
 import com.smartretail.mbc.common.enums.MemberLevelEnum;
 import com.smartretail.mbc.common.exception.BusinessException;
 import com.smartretail.mbc.common.util.RedisKeyUtil;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartretail.mbc.coupon.entity.CouponInstance;
 import com.smartretail.mbc.coupon.entity.CouponTemplate;
 import com.smartretail.mbc.coupon.mapper.CouponInstanceMapper;
@@ -54,10 +57,12 @@ import java.util.stream.Collectors;
 public class BenefitServiceImpl implements BenefitService {
 
     private final BenefitUseLogMapper benefitUseLogMapper;
+    private final IdempotentRecordMapper idempotentRecordMapper;
     private final CouponInstanceMapper couponInstanceMapper;
     private final CouponTemplateMapper couponTemplateMapper;
     private final MemberMapper memberMapper;
     private final StringRedisTemplate stringRedisTemplate;
+    private final ObjectMapper objectMapper;
 
     @Lazy
     @Autowired
@@ -79,6 +84,10 @@ public class BenefitServiceImpl implements BenefitService {
     private static final int PROCESS_STATUS_PROCESSING = 1;
     private static final int PROCESS_STATUS_COMPLETED = 2;
     private static final int PROCESS_STATUS_FAILED = 3;
+
+    private static final int BIZ_TYPE_PAY_LOCK = 1;
+    private static final int BIZ_TYPE_CONFIRM = 2;
+    private static final int BIZ_TYPE_REFUND_RETURN = 3;
 
     private final Map<Integer, BigDecimal> levelDiscountMap = new HashMap<>();
 
@@ -123,7 +132,15 @@ public class BenefitServiceImpl implements BenefitService {
                 return buildLockIdempotentResult(existLogs, requestId);
             }
 
-            BenefitLockResultVO result = doLockBenefits(dto);
+            recordIdempotentStart(dto.getOrderNo(), BIZ_TYPE_PAY_LOCK, requestId, toJsonString(dto));
+            BenefitLockResultVO result;
+            try {
+                result = doLockBenefits(dto);
+                recordIdempotentSuccess(dto.getOrderNo(), BIZ_TYPE_PAY_LOCK, requestId);
+            } catch (Exception e) {
+                recordIdempotentFail(dto.getOrderNo(), BIZ_TYPE_PAY_LOCK, requestId, e.getMessage());
+                throw e;
+            }
             result.setIdempotent(false);
             result.setRequestId(requestId);
             result.setProcessStatus(PROCESS_STATUS_COMPLETED);
@@ -410,7 +427,15 @@ public class BenefitServiceImpl implements BenefitService {
                 throw new BusinessException("已退还的权益不能再确认");
             }
 
-            BenefitConfirmResultVO result = doConfirmBenefits(dto);
+            BenefitConfirmResultVO result;
+            recordIdempotentStart(dto.getOrderNo(), BIZ_TYPE_CONFIRM, requestId, toJsonString(dto));
+            try {
+                result = doConfirmBenefits(dto);
+                recordIdempotentSuccess(dto.getOrderNo(), BIZ_TYPE_CONFIRM, requestId);
+            } catch (Exception e) {
+                recordIdempotentFail(dto.getOrderNo(), BIZ_TYPE_CONFIRM, requestId, e.getMessage());
+                throw e;
+            }
             result.setIdempotent(false);
             result.setRequestId(requestId);
             result.setProcessStatus(PROCESS_STATUS_COMPLETED);
@@ -569,7 +594,16 @@ public class BenefitServiceImpl implements BenefitService {
                 return buildReturnIdempotentResult(returnedLogs, requestId);
             }
 
-            List<BenefitUseVO> result = doReturnBenefits(dto);
+            List<BenefitUseVO> result;
+            String businessNo = StringUtils.hasText(dto.getRefundNo()) ? dto.getRefundNo() : dto.getOrderNo();
+            recordIdempotentStart(businessNo, BIZ_TYPE_REFUND_RETURN, requestId, toJsonString(dto));
+            try {
+                result = doReturnBenefits(dto);
+                recordIdempotentSuccess(businessNo, BIZ_TYPE_REFUND_RETURN, requestId);
+            } catch (Exception e) {
+                recordIdempotentFail(businessNo, BIZ_TYPE_REFUND_RETURN, requestId, e.getMessage());
+                throw e;
+            }
             for (BenefitUseVO vo : result) {
                 vo.setIdempotent(false);
                 vo.setRequestId(requestId);
@@ -845,5 +879,53 @@ public class BenefitServiceImpl implements BenefitService {
         String datePart = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
         String randomPart = String.format("%04d", new Random().nextInt(10000));
         return USE_NO_PREFIX + datePart + randomPart;
+    }
+
+    @Override
+    public void recordIdempotentStart(String businessNo, Integer businessType, String requestId, String requestParam) {
+        IdempotentRecord record = new IdempotentRecord();
+        record.setBusinessNo(businessNo);
+        record.setBusinessType(businessType);
+        record.setProcessStatus(PROCESS_STATUS_PROCESSING);
+        record.setRequestId(requestId);
+        record.setRequestParam(requestParam);
+        record.setRetryCount(0);
+        record.setOperatorType(0);
+        record.setOperateTime(LocalDateTime.now());
+        idempotentRecordMapper.insert(record);
+    }
+
+    @Override
+    public void recordIdempotentSuccess(String businessNo, Integer businessType, String requestId) {
+        LambdaUpdateWrapper<IdempotentRecord> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(IdempotentRecord::getBusinessNo, businessNo)
+                .eq(IdempotentRecord::getBusinessType, businessType)
+                .eq(IdempotentRecord::getRequestId, requestId)
+                .eq(IdempotentRecord::getProcessStatus, PROCESS_STATUS_PROCESSING)
+                .set(IdempotentRecord::getProcessStatus, PROCESS_STATUS_COMPLETED)
+                .set(IdempotentRecord::getOperateTime, LocalDateTime.now());
+        idempotentRecordMapper.update(null, wrapper);
+    }
+
+    @Override
+    public void recordIdempotentFail(String businessNo, Integer businessType, String requestId, String errorMsg) {
+        LambdaUpdateWrapper<IdempotentRecord> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(IdempotentRecord::getBusinessNo, businessNo)
+                .eq(IdempotentRecord::getBusinessType, businessType)
+                .eq(IdempotentRecord::getRequestId, requestId)
+                .eq(IdempotentRecord::getProcessStatus, PROCESS_STATUS_PROCESSING)
+                .set(IdempotentRecord::getProcessStatus, PROCESS_STATUS_FAILED)
+                .set(IdempotentRecord::getResultMsg, errorMsg)
+                .set(IdempotentRecord::getOperateTime, LocalDateTime.now());
+        idempotentRecordMapper.update(null, wrapper);
+    }
+
+    private String toJsonString(Object obj) {
+        try {
+            return objectMapper.writeValueAsString(obj);
+        } catch (Exception e) {
+            log.warn("序列化对象失败", e);
+            return "{}";
+        }
     }
 }

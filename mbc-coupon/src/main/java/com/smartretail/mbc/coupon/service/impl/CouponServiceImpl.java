@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.smartretail.mbc.common.enums.CouponStatusEnum;
 import com.smartretail.mbc.common.enums.CouponTypeEnum;
 import com.smartretail.mbc.common.exception.BusinessException;
+import com.smartretail.mbc.common.service.BudgetOccupyService;
 import com.smartretail.mbc.common.util.RedisKeyUtil;
 import com.smartretail.mbc.coupon.dto.*;
 import com.smartretail.mbc.coupon.entity.CouponInstance;
@@ -19,6 +20,7 @@ import com.smartretail.mbc.member.entity.Member;
 import com.smartretail.mbc.member.mapper.MemberMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -44,6 +46,9 @@ public class CouponServiceImpl implements CouponService {
     private final CouponInstanceMapper couponInstanceMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final MemberMapper memberMapper;
+
+    @Lazy
+    private final BudgetOccupyService budgetOccupyService;
 
     private static final String INSTANCE_NO_PREFIX = "CI";
     private static final int BATCH_SIZE = 500;
@@ -277,6 +282,25 @@ public class CouponServiceImpl implements CouponService {
         }
 
         couponInstanceMapper.insert(instance);
+
+        if (template.getActivityId() != null) {
+            BigDecimal budgetAmount = template.getReduceAmount() != null ? template.getReduceAmount() : BigDecimal.ZERO;
+            boolean budgetOk = budgetOccupyService.tryOccupyBudget(
+                    template.getActivityId(), null, budgetAmount, 1, null, instance.getId());
+            if (!budgetOk) {
+                couponInstanceMapper.deleteById(instance.getId());
+                if (template.getDailyLimit() != null && template.getDailyLimit() > 0) {
+                    String dailyKey = RedisKeyUtil.dailyLimit(dto.getTemplateId(), dto.getMemberId());
+                    stringRedisTemplate.opsForValue().decrement(dailyKey);
+                }
+                LambdaUpdateWrapper<CouponTemplate> rollbackWrapper = new LambdaUpdateWrapper<>();
+                rollbackWrapper.eq(CouponTemplate::getId, template.getId())
+                        .setSql("received_count = received_count - 1");
+                couponTemplateMapper.update(null, rollbackWrapper);
+                result.setFailReason("活动预算不足");
+                return result;
+            }
+        }
 
         result.setSuccess(true);
         result.setInstanceId(instance.getId());

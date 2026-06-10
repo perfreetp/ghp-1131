@@ -22,4 +22,10 @@ public interface BenefitService {
     IPage<BenefitUseVO> queryLogs(BenefitQueryDTO dto);
 
     void releaseExpiredLocksTask();
+
+    void recordIdempotentStart(String businessNo, Integer businessType, String requestId, String requestParam);
+
+    void recordIdempotentSuccess(String businessNo, Integer businessType, String requestId);
+
+    void recordIdempotentFail(String businessNo, Integer businessType, String requestId, String errorMsg);
 }

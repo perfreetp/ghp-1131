@@ -1,5 +1,6 @@
 package com.smartretail.mbc.order.vo;
 
+import com.smartretail.mbc.common.vo.RiskCheckResultVO;
 import com.smartretail.mbc.member.vo.MemberSimpleVO;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
@@ -109,4 +110,7 @@ public class OrderVO {
 
     @Schema(description = "处理状态 1处理中 2已完成 3失败")
     private Integer processStatus;
+
+    @Schema(description = "风控检查结果")
+    private RiskCheckResultVO riskCheck;
 }

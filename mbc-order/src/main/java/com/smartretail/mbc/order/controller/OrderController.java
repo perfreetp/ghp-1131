@@ -9,11 +9,13 @@ import com.smartretail.mbc.order.dto.OrderQueryDTO;
 import com.smartretail.mbc.order.dto.OrderRefundDTO;
 import com.smartretail.mbc.order.dto.OrderValidateDTO;
 import com.smartretail.mbc.order.dto.PosOrderValidateDTO;
+import com.smartretail.mbc.order.dto.SmartBenefitQueryDTO;
 import com.smartretail.mbc.order.service.OrderService;
 import com.smartretail.mbc.order.vo.OrderStatisticsVO;
 import com.smartretail.mbc.order.vo.OrderValidateResultVO;
 import com.smartretail.mbc.order.vo.OrderVO;
 import com.smartretail.mbc.order.vo.PosValidateResultVO;
+import com.smartretail.mbc.order.vo.SmartBenefitResultVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -31,6 +33,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class OrderController {
 
     private final OrderService orderService;
+
+    @Operation(summary = "小程序智能权益推荐", description = "根据会员信息、门店、购物车商品，智能推荐最优的优惠券+积分组合方案")
+    @PostMapping("/smart-recommend")
+    public Result<SmartBenefitResultVO> smartBenefitRecommend(
+            @Parameter(description = "智能权益推荐查询", required = true)
+            @Valid @RequestBody SmartBenefitQueryDTO dto) {
+        return Result.success(orderService.smartBenefitRecommend(dto));
+    }
 
     @Operation(summary = "收银端订单试算", description = "收银端完整下单试算：会员识别、商品校验、排除商品识别、券试用、券组合推荐、积分计算、等级折扣、最终金额计算等")
     @PostMapping("/pos/validate")

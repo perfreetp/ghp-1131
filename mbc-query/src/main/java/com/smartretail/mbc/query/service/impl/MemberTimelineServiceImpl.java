@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.smartretail.mbc.benefit.entity.BenefitUseLog;
+import com.smartretail.mbc.benefit.entity.IdempotentRecord;
 import com.smartretail.mbc.benefit.mapper.BenefitUseLogMapper;
+import com.smartretail.mbc.benefit.mapper.IdempotentRecordMapper;
 import com.smartretail.mbc.common.enums.CouponStatusEnum;
 import com.smartretail.mbc.common.enums.PointTypeEnum;
 import com.smartretail.mbc.common.enums.TimelineEventTypeEnum;
@@ -55,6 +57,7 @@ public class MemberTimelineServiceImpl implements MemberTimelineService {
     private final BenefitUseLogMapper benefitUseLogMapper;
     private final MemberMergeLogMapper memberMergeLogMapper;
     private final MessageLogMapper messageLogMapper;
+    private final IdempotentRecordMapper idempotentRecordMapper;
 
     private static final int BIZ_TYPE_ORDER = 1;
     private static final int BIZ_TYPE_COUPON = 2;
@@ -130,6 +133,12 @@ public class MemberTimelineServiceImpl implements MemberTimelineService {
         if (isEventTypeIncluded(eventTypes, TimelineEventTypeEnum.MESSAGE_PUSH)) {
             List<TimelineEventVO> messageEvents = getMessageEvents(dto.getMemberId(), startTime, endTime, limit);
             allEvents.addAll(messageEvents);
+        }
+
+        if (isEventTypeIncluded(eventTypes, TimelineEventTypeEnum.MANUAL_REPLAY)
+                || isEventTypeIncluded(eventTypes, TimelineEventTypeEnum.MANUAL_MARK_FAIL)) {
+            List<TimelineEventVO> idempotentEvents = getIdempotentEvents(dto.getMemberId(), eventTypes, startTime, endTime, limit);
+            allEvents.addAll(idempotentEvents);
         }
 
         allEvents.sort(Comparator.comparing(TimelineEventVO::getEventTime).reversed());
@@ -721,6 +730,66 @@ public class MemberTimelineServiceImpl implements MemberTimelineService {
         detail.put("sendStatus", log.getSendStatus());
         detail.put("bizId", log.getBizId());
         detail.put("bizData", log.getBizData());
+        vo.setDetail(detail);
+
+        return vo;
+    }
+
+    private List<TimelineEventVO> getIdempotentEvents(Long memberId, List<Integer> eventTypes,
+                                                       LocalDateTime startTime, LocalDateTime endTime, int limit) {
+        LambdaQueryWrapper<IdempotentRecord> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(IdempotentRecord::getOperatorType, 1)
+                .or()
+                .eq(IdempotentRecord::getOperatorType, 2);
+        wrapper.orderByDesc(IdempotentRecord::getOperateTime);
+        wrapper.last("LIMIT " + limit);
+
+        List<IdempotentRecord> records = idempotentRecordMapper.selectList(wrapper);
+
+        List<TimelineEventVO> events = new ArrayList<>();
+        for (IdempotentRecord record : records) {
+            if (record.getOperatorType() == null || record.getOperatorType() == 0) {
+                continue;
+            }
+            TimelineEventVO event = convertIdempotentRecord(record);
+            if (startTime != null && event.getEventTime() != null && event.getEventTime().isBefore(startTime)) {
+                continue;
+            }
+            if (endTime != null && event.getEventTime() != null && event.getEventTime().isAfter(endTime)) {
+                continue;
+            }
+            if (CollectionUtils.isEmpty(eventTypes) || eventTypes.contains(event.getEventType())) {
+                events.add(event);
+            }
+        }
+        return events;
+    }
+
+    private TimelineEventVO convertIdempotentRecord(IdempotentRecord record) {
+        TimelineEventVO vo = new TimelineEventVO();
+        boolean isReplay = record.getOperatorType() != null && record.getOperatorType() == 1;
+        TimelineEventTypeEnum eventType = isReplay
+                ? TimelineEventTypeEnum.MANUAL_REPLAY
+                : TimelineEventTypeEnum.MANUAL_MARK_FAIL;
+
+        vo.setEventId(generateEventId(eventType, record.getId()));
+        vo.setEventType(eventType.getCode());
+        vo.setEventTypeName(eventType.getName());
+        vo.setEventTag(eventType.getTag());
+        vo.setEventDesc(eventType.getDesc());
+        vo.setEventTime(record.getOperateTime());
+        vo.setBizType(BIZ_TYPE_COUPON);
+        vo.setBizId(record.getBusinessNo());
+        vo.setDirection(DIRECTION_NEUTRAL);
+        vo.setRelatedStaff(record.getOperator());
+
+        Map<String, Object> detail = new HashMap<>();
+        detail.put("idempotentRecordId", record.getId());
+        detail.put("businessNo", record.getBusinessNo());
+        detail.put("businessType", record.getBusinessType());
+        detail.put("processStatus", record.getProcessStatus());
+        detail.put("retryCount", record.getRetryCount());
+        detail.put("remark", record.getRemark());
         vo.setDetail(detail);
 
         return vo;

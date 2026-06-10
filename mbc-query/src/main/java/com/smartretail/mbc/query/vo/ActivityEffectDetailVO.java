@@ -36,6 +36,9 @@ public class ActivityEffectDetailVO extends Activity {
     @Schema(description = "人群效果对比列表")
     private List<CrowdEffectCompareVO> crowdEffectList;
 
+    @Schema(description = "预算进度")
+    private ActivityBudgetProgressVO budgetProgress;
+
     @Data
     @Schema(description = "人群信息")
     public static class CrowdInfo {

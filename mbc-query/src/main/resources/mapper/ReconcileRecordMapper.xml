@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.query.mapper.ReconcileRecordMapper">
+
+    <sql id="commonFilter">
+        AND rr.reconcile_date >= #{startDate}
+        AND rr.reconcile_date &lt;= #{endDate}
+        AND rr.is_deleted = 0
+        <if test="storeCode != null and storeCode != ''">
+            AND bul.store_code = #{storeCode}
+        </if>
+        <if test="posCode != null and posCode != ''">
+            AND bul.pos_code = #{posCode}
+        </if>
+        <if test="reconcileStatus != null">
+            AND rr.reconcile_status = #{reconcileStatus}
+        </if>
+    </sql>
+
+    <select id="summaryByStore" resultType="java.util.Map">
+        SELECT
+            bul.store_code AS groupKey,
+            bul.store_code AS groupLabel,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN 1 ELSE 0 END), 0) AS totalConfirmCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN bul.benefit_value ELSE 0 END), 0) AS totalConfirmAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN 1 ELSE 0 END), 0) AS totalReturnCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN bul.benefit_value ELSE 0 END), 0) AS totalReturnAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 1 THEN 1 ELSE 0 END), 0) AS totalLockCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS totalRetryCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status = 1 THEN 1 ELSE 0 END), 0) AS matchedCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS unmatchedCount
+        FROM t_reconcile_record rr
+        INNER JOIN t_benefit_use_log bul ON rr.use_no = bul.use_no AND bul.is_deleted = 0
+        WHERE 1=1
+        <include refid="commonFilter"/>
+        GROUP BY bul.store_code
+    </select>
+
+    <select id="summaryByPos" resultType="java.util.Map">
+        SELECT
+            bul.pos_code AS groupKey,
+            bul.pos_code AS groupLabel,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN 1 ELSE 0 END), 0) AS totalConfirmCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN bul.benefit_value ELSE 0 END), 0) AS totalConfirmAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN 1 ELSE 0 END), 0) AS totalReturnCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN bul.benefit_value ELSE 0 END), 0) AS totalReturnAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 1 THEN 1 ELSE 0 END), 0) AS totalLockCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS totalRetryCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status = 1 THEN 1 ELSE 0 END), 0) AS matchedCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS unmatchedCount
+        FROM t_reconcile_record rr
+        INNER JOIN t_benefit_use_log bul ON rr.use_no = bul.use_no AND bul.is_deleted = 0
+        WHERE 1=1
+        <include refid="commonFilter"/>
+        GROUP BY bul.pos_code
+    </select>
+
+    <select id="summaryByTemplate" resultType="java.util.Map">
+        SELECT
+            CAST(bul.benefit_id AS CHAR) AS groupKey,
+            CAST(bul.benefit_id AS CHAR) AS groupLabel,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN 1 ELSE 0 END), 0) AS totalConfirmCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN bul.benefit_value ELSE 0 END), 0) AS totalConfirmAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN 1 ELSE 0 END), 0) AS totalReturnCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN bul.benefit_value ELSE 0 END), 0) AS totalReturnAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 1 THEN 1 ELSE 0 END), 0) AS totalLockCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS totalRetryCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status = 1 THEN 1 ELSE 0 END), 0) AS matchedCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS unmatchedCount
+        FROM t_reconcile_record rr
+        INNER JOIN t_benefit_use_log bul ON rr.use_no = bul.use_no AND bul.is_deleted = 0
+        WHERE 1=1
+        <include refid="commonFilter"/>
+        GROUP BY bul.benefit_id
+    </select>
+
+    <select id="summaryByDate" resultType="java.util.Map">
+        SELECT
+            CAST(rr.reconcile_date AS CHAR) AS groupKey,
+            CAST(rr.reconcile_date AS CHAR) AS groupLabel,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN 1 ELSE 0 END), 0) AS totalConfirmCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 2 THEN bul.benefit_value ELSE 0 END), 0) AS totalConfirmAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN 1 ELSE 0 END), 0) AS totalReturnCount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 3 THEN bul.benefit_value ELSE 0 END), 0) AS totalReturnAmount,
+            COALESCE(SUM(CASE WHEN bul.use_status = 1 THEN 1 ELSE 0 END), 0) AS totalLockCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS totalRetryCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status = 1 THEN 1 ELSE 0 END), 0) AS matchedCount,
+            COALESCE(SUM(CASE WHEN rr.reconcile_status IN (2,3,4,5) THEN 1 ELSE 0 END), 0) AS unmatchedCount
+        FROM t_reconcile_record rr
+        INNER JOIN t_benefit_use_log bul ON rr.use_no = bul.use_no AND bul.is_deleted = 0
+        WHERE 1=1
+        <include refid="commonFilter"/>
+        GROUP BY rr.reconcile_date
+        ORDER BY rr.reconcile_date
+    </select>
+
+</mapper>

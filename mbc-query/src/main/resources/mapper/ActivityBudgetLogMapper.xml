@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.query.mapper.ActivityBudgetLogMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.query.entity.ActivityBudgetLog">
+        <id column="id" property="id"/>
+        <result column="activity_id" property="activityId"/>
+        <result column="store_code" property="storeCode"/>
+        <result column="change_type" property="changeType"/>
+        <result column="change_amount" property="changeAmount"/>
+        <result column="change_quantity" property="changeQuantity"/>
+        <result column="before_budget" property="beforeBudget"/>
+        <result column="after_budget" property="afterBudget"/>
+        <result column="before_issued" property="beforeIssued"/>
+        <result column="after_issued" property="afterIssued"/>
+        <result column="before_redeemed" property="beforeRedeemed"/>
+        <result column="after_redeemed" property="afterRedeemed"/>
+        <result column="order_no" property="orderNo"/>
+        <result column="coupon_instance_id" property="couponInstanceId"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, activity_id, store_code, change_type, change_amount, change_quantity,
+        before_budget, after_budget, before_issued, after_issued,
+        before_redeemed, after_redeemed, order_no, coupon_instance_id,
+        create_time, update_time, create_by, update_by, is_deleted
+    </sql>
+
+    <select id="selectByActivityId" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM t_activity_budget_log
+        WHERE activity_id = #{activityId}
+          AND is_deleted = 0
+        ORDER BY create_time DESC
+    </select>
+
+</mapper>

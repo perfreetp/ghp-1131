@@ -482,3 +482,194 @@ INSERT INTO `t_crowd_group` (`crowd_code`, `crowd_name`, `crowd_type`, `rule_con
 ('CROWD_SILENT_30D', '30天未到店', 1, '[{"ruleType":4,"days":30}]', 2000, 0, 2, 1, '最近30天无消费记录的沉睡会员'),
 ('CROWD_BIRTHDAY', '本月生日', 1, '[{"ruleType":5}]', 300, 0, 2, 1, '本月生日会员');
 
+-- ============================================================
+-- 15. 风控规则配置表
+-- ============================================================
+DROP TABLE IF EXISTS `t_risk_rule`;
+CREATE TABLE `t_risk_rule` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `rule_code`       VARCHAR(64)  NOT NULL COMMENT '规则编码（唯一）',
+    `rule_name`       VARCHAR(128) NOT NULL COMMENT '规则名称',
+    `scene`           TINYINT      NOT NULL COMMENT '风控场景：1领券 2试算 3退款返还 4跨店核销',
+    `condition_type`  TINYINT      NOT NULL DEFAULT 1 COMMENT '条件类型：1次数 2金额 3频率',
+    `time_window`     INT          NOT NULL DEFAULT 3600 COMMENT '时间窗口（秒）',
+    `threshold_value` DECIMAL(15,2) NOT NULL COMMENT '阈值',
+    `risk_level`      TINYINT      NOT NULL COMMENT '触发后风险等级：0安全 1低风险 2中风险 3高风险',
+    `enabled`         TINYINT      NOT NULL DEFAULT 1 COMMENT '是否启用：0禁用 1启用',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_rule_code` (`rule_code`),
+    KEY `idx_scene` (`scene`),
+    KEY `idx_enabled` (`enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='风控规则配置表';
+
+-- ============================================================
+-- 16. 风控拦截记录表
+-- ============================================================
+DROP TABLE IF EXISTS `t_risk_record`;
+CREATE TABLE `t_risk_record` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `record_no`       VARCHAR(64)  NOT NULL COMMENT '记录编号',
+    `scene`           TINYINT      NOT NULL COMMENT '风控场景',
+    `risk_level`      TINYINT      NOT NULL COMMENT '风险等级',
+    `member_id`       BIGINT       DEFAULT NULL COMMENT '会员ID',
+    `store_code`      VARCHAR(32)  DEFAULT NULL COMMENT '门店编码',
+    `pos_code`        VARCHAR(32)  DEFAULT NULL COMMENT 'POS编码',
+    `order_no`        VARCHAR(64)  DEFAULT NULL COMMENT '订单号',
+    `rule_code`       VARCHAR(64)  DEFAULT NULL COMMENT '命中的规则编码',
+    `rule_name`       VARCHAR(128) DEFAULT NULL COMMENT '命中的规则名称',
+    `current_value`   VARCHAR(64)  DEFAULT NULL COMMENT '当前值',
+    `threshold_value` VARCHAR(64)  DEFAULT NULL COMMENT '阈值',
+    `handle_result`   TINYINT      NOT NULL DEFAULT 0 COMMENT '处置结果：0待处置 1放行 2人工确认 3拦截',
+    `handle_staff`    VARCHAR(64)  DEFAULT NULL COMMENT '处置人',
+    `handle_time`     DATETIME     DEFAULT NULL COMMENT '处置时间',
+    `handle_remark`   VARCHAR(500) DEFAULT NULL COMMENT '处置备注',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_record_no` (`record_no`),
+    KEY `idx_scene` (`scene`),
+    KEY `idx_risk_level` (`risk_level`),
+    KEY `idx_member_id` (`member_id`),
+    KEY `idx_handle_result` (`handle_result`),
+    KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='风控拦截记录表';
+
+-- ============================================================
+-- 初始化风控规则
+-- ============================================================
+INSERT INTO `t_risk_rule` (`rule_code`, `rule_name`, `scene`, `condition_type`, `time_window`, `threshold_value`, `risk_level`, `enabled`) VALUES
+('RISK_COUPON_LOW', '领券频次-低风险', 1, 1, 3600, 5, 1, 1),
+('RISK_COUPON_MEDIUM', '领券频次-中风险', 1, 1, 3600, 10, 2, 1),
+('RISK_COUPON_HIGH', '领券频次-高风险', 1, 1, 3600, 20, 3, 1),
+('RISK_POS_LOW', '试算频次-低风险', 2, 1, 3600, 20, 1, 1),
+('RISK_POS_MEDIUM', '试算频次-中风险', 2, 1, 3600, 50, 2, 1),
+('RISK_POS_HIGH', '试算频次-高风险', 2, 1, 3600, 100, 3, 1),
+('RISK_REFUND_LOW', '退款频次-低风险', 3, 1, 604800, 3, 1, 1),
+('RISK_REFUND_MEDIUM', '退款频次-中风险', 3, 1, 604800, 5, 2, 1),
+('RISK_REFUND_HIGH', '退款频次-高风险', 3, 1, 604800, 10, 3, 1),
+('RISK_CROSS_STORE_LOW', '跨店核销-低风险', 4, 1, 604800, 3, 1, 1),
+('RISK_CROSS_STORE_MEDIUM', '跨店核销-中风险', 4, 1, 604800, 5, 2, 1),
+('RISK_CROSS_STORE_HIGH', '跨店核销-高风险', 4, 1, 604800, 10, 3, 1);
+
+-- ============================================================
+-- 17. 活动预算表
+-- ============================================================
+DROP TABLE IF EXISTS `t_activity_budget`;
+CREATE TABLE `t_activity_budget` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `activity_id`     BIGINT       NOT NULL COMMENT '活动ID',
+    `store_code`      VARCHAR(64)  DEFAULT NULL COMMENT '门店编码(空=总部总预算)',
+    `store_name`      VARCHAR(128) DEFAULT NULL COMMENT '门店名称',
+    `budget_type`     TINYINT      NOT NULL DEFAULT 1 COMMENT '预算类型: 1总预算 2门店预算',
+    `total_budget`    DECIMAL(15,2) NOT NULL DEFAULT 0 COMMENT '总预算金额',
+    `used_budget`     DECIMAL(15,2) NOT NULL DEFAULT 0 COMMENT '已使用预算',
+    `issue_limit`     INT          NOT NULL DEFAULT 0 COMMENT '发券上限',
+    `issued_count`    INT          NOT NULL DEFAULT 0 COMMENT '已发券数',
+    `redeem_limit`    INT          NOT NULL DEFAULT 0 COMMENT '核销上限',
+    `redeemed_count`  INT          NOT NULL DEFAULT 0 COMMENT '已核销数',
+    `status`          TINYINT      NOT NULL DEFAULT 0 COMMENT '状态: 0正常 1超限',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    KEY `idx_activity_id` (`activity_id`),
+    UNIQUE KEY `uk_activity_store` (`activity_id`, `store_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='活动预算表';
+
+-- ============================================================
+-- 18. 活动预算变动日志表
+-- ============================================================
+DROP TABLE IF EXISTS `t_activity_budget_log`;
+CREATE TABLE `t_activity_budget_log` (
+    `id`                BIGINT       NOT NULL AUTO_INCREMENT,
+    `activity_id`       BIGINT       NOT NULL COMMENT '活动ID',
+    `store_code`        VARCHAR(64)  DEFAULT NULL COMMENT '门店编码',
+    `change_type`       TINYINT      NOT NULL COMMENT '变动类型: 1领取占用 2锁定占用 3核销确认 4退款释放 5超时释放',
+    `change_amount`     DECIMAL(15,2) NOT NULL DEFAULT 0 COMMENT '变动金额',
+    `change_quantity`   INT          NOT NULL DEFAULT 0 COMMENT '变动数量',
+    `before_budget`     DECIMAL(15,2) NOT NULL DEFAULT 0 COMMENT '变动前已用预算',
+    `after_budget`      DECIMAL(15,2) NOT NULL DEFAULT 0 COMMENT '变动后已用预算',
+    `before_issued`     INT          NOT NULL DEFAULT 0 COMMENT '变动前已发券数',
+    `after_issued`      INT          NOT NULL DEFAULT 0 COMMENT '变动后已发券数',
+    `before_redeemed`   INT          NOT NULL DEFAULT 0 COMMENT '变动前已核销数',
+    `after_redeemed`    INT          NOT NULL DEFAULT 0 COMMENT '变动后已核销数',
+    `order_no`          VARCHAR(64)  DEFAULT NULL COMMENT '关联订单号',
+    `coupon_instance_id` BIGINT      DEFAULT NULL COMMENT '关联券实例ID',
+    `create_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`         VARCHAR(64)  DEFAULT 'system',
+    `update_by`         VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`        TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    KEY `idx_activity_id` (`activity_id`),
+    KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='活动预算变动日志表';
+
+-- ============================================================
+-- 19. 幂等处理记录表
+-- ============================================================
+DROP TABLE IF EXISTS `t_idempotent_record`;
+CREATE TABLE `t_idempotent_record` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `business_no`     VARCHAR(64)  NOT NULL COMMENT '业务号(如orderNo/refundNo)',
+    `business_type`   INT          NOT NULL COMMENT '业务类型: 1支付锁定 2完成核销 3退款返还',
+    `process_status`  INT          NOT NULL DEFAULT 1 COMMENT '处理状态: 1处理中 2已完成 3已失败',
+    `request_id`      VARCHAR(64)  DEFAULT NULL COMMENT '请求唯一ID',
+    `request_param`   TEXT         DEFAULT NULL COMMENT '请求参数JSON',
+    `result_code`     INT          DEFAULT NULL COMMENT '业务结果码',
+    `result_msg`      VARCHAR(500) DEFAULT NULL COMMENT '业务结果信息',
+    `retry_count`     INT          NOT NULL DEFAULT 0 COMMENT '重试次数',
+    `operator`        VARCHAR(64)  DEFAULT NULL COMMENT '操作人',
+    `operator_type`   INT          NOT NULL DEFAULT 0 COMMENT '操作类型: 0系统 1人工重放 2人工标记失败',
+    `operate_time`    DATETIME     DEFAULT NULL COMMENT '最近操作时间',
+    `next_retry_time` DATETIME     DEFAULT NULL COMMENT '下次重试时间',
+    `remark`          VARCHAR(500) DEFAULT NULL COMMENT '备注',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `create_by`       VARCHAR(64)  DEFAULT 'system' COMMENT '创建人',
+    `update_by`       VARCHAR(64)  DEFAULT 'system' COMMENT '更新人',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0 COMMENT '是否删除: 0否 1是',
+    PRIMARY KEY (`id`),
+    KEY `idx_business_no` (`business_no`),
+    KEY `idx_business_type` (`business_type`),
+    KEY `idx_process_status` (`process_status`),
+    KEY `idx_request_id` (`request_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='幂等处理记录表';
+
+-- ============================================================
+-- 20. 对账记录表
+-- ============================================================
+DROP TABLE IF EXISTS `t_reconcile_record`;
+CREATE TABLE `t_reconcile_record` (
+    `id`              BIGINT       NOT NULL AUTO_INCREMENT,
+    `use_no`          VARCHAR(64)  DEFAULT NULL COMMENT '权益使用编号',
+    `order_no`        VARCHAR(64)  NOT NULL COMMENT '关联订单号',
+    `benefit_type`    INT          DEFAULT NULL COMMENT '权益类型: 1券 2积分 3等级折扣 4兑换',
+    `benefit_value`   DECIMAL(15,2) DEFAULT NULL COMMENT '权益金额',
+    `pos_pay_amount`  DECIMAL(15,2) DEFAULT NULL COMMENT '收银端实际支付金额',
+    `pos_pay_time`    DATETIME     DEFAULT NULL COMMENT '收银端支付时间',
+    `reconcile_status` INT        NOT NULL DEFAULT 6 COMMENT '对账状态: 1已匹配 2金额不符 3流水缺失 4重复核销 5退款异常 6待对账',
+    `reconcile_diff`  VARCHAR(500) DEFAULT NULL COMMENT '差异描述',
+    `reconcile_date`  DATE         NOT NULL COMMENT '对账日期',
+    `reconcile_time`  DATETIME     DEFAULT NULL COMMENT '对账执行时间',
+    `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `create_by`       VARCHAR(64)  DEFAULT 'system',
+    `update_by`       VARCHAR(64)  DEFAULT 'system',
+    `is_deleted`      TINYINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`),
+    KEY `idx_order_no` (`order_no`),
+    KEY `idx_reconcile_date` (`reconcile_date`),
+    KEY `idx_reconcile_status` (`reconcile_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对账记录表';
+

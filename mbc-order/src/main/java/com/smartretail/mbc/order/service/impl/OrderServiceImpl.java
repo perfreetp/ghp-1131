@@ -9,14 +9,18 @@ import com.smartretail.mbc.benefit.dto.BenefitReturnDTO;
 import com.smartretail.mbc.benefit.entity.BenefitUseLog;
 import com.smartretail.mbc.benefit.mapper.BenefitUseLogMapper;
 import com.smartretail.mbc.benefit.service.BenefitService;
+import com.smartretail.mbc.common.dto.RiskCheckDTO;
 import com.smartretail.mbc.common.enums.CouponStatusEnum;
 import com.smartretail.mbc.common.enums.BusinessTypeEnum;
 import com.smartretail.mbc.common.enums.PosTypeEnum;
 import com.smartretail.mbc.common.enums.MemberLevelEnum;
 import com.smartretail.mbc.common.enums.OrderStatusEnum;
 import com.smartretail.mbc.common.enums.PointSourceEnum;
+import com.smartretail.mbc.common.enums.RiskSceneEnum;
 import com.smartretail.mbc.common.exception.BusinessException;
+import com.smartretail.mbc.common.service.RiskCheckService;
 import com.smartretail.mbc.common.util.RedisKeyUtil;
+import com.smartretail.mbc.common.vo.RiskCheckResultVO;
 import com.smartretail.mbc.coupon.entity.CouponInstance;
 import com.smartretail.mbc.coupon.entity.CouponTemplate;
 import com.smartretail.mbc.coupon.mapper.CouponInstanceMapper;
@@ -41,13 +45,17 @@ import com.smartretail.mbc.order.dto.OrderQueryDTO;
 import com.smartretail.mbc.order.dto.OrderRefundDTO;
 import com.smartretail.mbc.order.dto.OrderValidateDTO;
 import com.smartretail.mbc.order.dto.PosOrderValidateDTO;
+import com.smartretail.mbc.order.dto.SmartBenefitQueryDTO;
 import com.smartretail.mbc.order.entity.ConsumeOrder;
 import com.smartretail.mbc.order.mapper.ConsumeOrderMapper;
 import com.smartretail.mbc.order.service.OrderService;
+import com.smartretail.mbc.order.vo.BenefitRecommendVO;
 import com.smartretail.mbc.order.vo.OrderStatisticsVO;
 import com.smartretail.mbc.order.vo.OrderValidateResultVO;
 import com.smartretail.mbc.order.vo.OrderVO;
 import com.smartretail.mbc.order.vo.PosValidateResultVO;
+import com.smartretail.mbc.order.vo.SmartBenefitResultVO;
+import com.smartretail.mbc.order.vo.UnavailableCouponVO;
 import com.smartretail.mbc.point.dto.PointAddDTO;
 import com.smartretail.mbc.point.service.PointService;
 import lombok.RequiredArgsConstructor;
@@ -90,6 +98,7 @@ public class OrderServiceImpl implements OrderService {
     private final BenefitService benefitService;
     private final PointService pointService;
     private final LevelService levelService;
+    private final RiskCheckService riskCheckService;
 
     private static final String ORDER_CREATE_KEY = "mbc:order:create:";
     private static final int IDEMPOTENT_EXPIRE_MINUTES = 30;
@@ -102,6 +111,329 @@ public class OrderServiceImpl implements OrderService {
     private static final int PROCESS_STATUS_FAILED = 3;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Override
+    public SmartBenefitResultVO smartBenefitRecommend(SmartBenefitQueryDTO dto) {
+        SmartBenefitResultVO result = new SmartBenefitResultVO();
+
+        Member member = memberMapper.selectById(dto.getMemberId());
+        if (member == null) {
+            throw new BusinessException("会员不存在");
+        }
+        if (member.getStatus() == null || member.getStatus() != 1) {
+            throw new BusinessException("会员状态异常");
+        }
+
+        MemberLevelEnum levelEnum = MemberLevelEnum.getByCode(member.getLevelCode());
+        result.setMemberLevel(member.getLevelCode() != null ? member.getLevelCode() : 1);
+        result.setMemberLevelName(levelEnum.getName());
+        result.setCurrentPoints(member.getCurrentPoints() != null ? member.getCurrentPoints() : 0);
+
+        StoreInfo storeInfo = storeInfoMapper.selectOne(
+                new LambdaQueryWrapper<StoreInfo>()
+                        .eq(StoreInfo::getStoreCode, dto.getStoreCode())
+                        .last("LIMIT 1")
+        );
+        if (storeInfo == null) {
+            throw new BusinessException("门店不存在: " + dto.getStoreCode());
+        }
+
+        Integer businessType = storeInfo.getStoreType();
+        String storeName = storeInfo.getStoreName();
+        String businessTypeName = getBusinessTypeName(businessType);
+        Integer posType = dto.getPosCode() != null ? dto.getPosCode() : 4;
+
+        BigDecimal cartTotal = BigDecimal.ZERO;
+        if (dto.getItems() != null) {
+            for (SmartBenefitQueryDTO.CartItemDTO item : dto.getItems()) {
+                if (item.getSubtotal() != null) {
+                    cartTotal = cartTotal.add(item.getSubtotal());
+                }
+            }
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        List<CouponInstance> allCoupons = couponInstanceMapper.selectList(
+                new LambdaQueryWrapper<CouponInstance>()
+                        .eq(CouponInstance::getMemberId, member.getId())
+                        .eq(CouponInstance::getCouponStatus, CouponStatusEnum.AVAILABLE.getCode())
+                        .gt(CouponInstance::getValidEnd, now)
+        );
+
+        int totalCoupons = allCoupons.size();
+        result.setTotalCoupons(totalCoupons);
+
+        List<AvailableCouponInfo> availableList = new ArrayList<>();
+        List<UnavailableCouponVO> unavailableList = new ArrayList<>();
+
+        for (CouponInstance instance : allCoupons) {
+            CouponTemplate template = couponTemplateMapper.selectById(instance.getTemplateId());
+            if (template == null) {
+                UnavailableCouponVO uv = new UnavailableCouponVO();
+                uv.setInstanceId(instance.getId());
+                uv.setCouponName("未知");
+                uv.setCouponType(null);
+                uv.setReason("优惠券模板不存在");
+                unavailableList.add(uv);
+                continue;
+            }
+
+            String unavailReason = checkCouponUnavailability(template, dto.getStoreCode(), storeName,
+                    businessType, businessTypeName, posType, cartTotal);
+
+            if (unavailReason != null) {
+                UnavailableCouponVO uv = new UnavailableCouponVO();
+                uv.setInstanceId(instance.getId());
+                uv.setCouponName(template.getCouponName());
+                uv.setCouponType(template.getCouponType());
+                uv.setReason(unavailReason);
+                unavailableList.add(uv);
+            } else {
+                AvailableCouponInfo info = new AvailableCouponInfo();
+                info.instanceId = instance.getId();
+                info.templateId = instance.getTemplateId();
+                info.couponName = template.getCouponName();
+                info.couponType = template.getCouponType();
+                info.fullAmount = template.getFullAmount();
+                info.reduceAmount = template.getReduceAmount() != null ? template.getReduceAmount() : BigDecimal.ZERO;
+                info.savedAmount = info.reduceAmount;
+                if (info.savedAmount.compareTo(cartTotal) > 0) {
+                    info.savedAmount = cartTotal;
+                }
+                availableList.add(info);
+            }
+        }
+
+        availableList.sort(Comparator.comparing(AvailableCouponInfo::getSavedAmount, Comparator.reverseOrder()));
+
+        result.setAvailableCoupons(availableList.size());
+        result.setUnavailableCoupons(unavailableList);
+
+        int currentPoints = member.getCurrentPoints() != null ? member.getCurrentPoints() : 0;
+        BigDecimal maxPointAmount = cartTotal.multiply(MAX_POINT_RATIO);
+        int maxPointsByAmount = maxPointAmount.multiply(POINT_RATIO).setScale(0, RoundingMode.DOWN).intValue();
+        int autoMaxPoints = Math.min(currentPoints, maxPointsByAmount);
+
+        int usedPoints;
+        if (dto.getMaxPointsToUse() != null) {
+            usedPoints = Math.min(dto.getMaxPointsToUse(), autoMaxPoints);
+        } else {
+            usedPoints = autoMaxPoints;
+        }
+        BigDecimal pointSavedAmount = new BigDecimal(usedPoints).divide(POINT_RATIO, 2, RoundingMode.HALF_UP);
+
+        List<BenefitRecommendVO> recommendations = new ArrayList<>();
+
+        boolean hasCoupons = !availableList.isEmpty();
+        boolean hasPoints = usedPoints > 0 && pointSavedAmount.compareTo(BigDecimal.ZERO) > 0;
+
+        if (hasCoupons && hasPoints) {
+            AvailableCouponInfo bestCoupon = availableList.get(0);
+
+            BenefitRecommendVO plan1 = new BenefitRecommendVO();
+            plan1.setPlanId(1);
+            plan1.setCouponIds(List.of(bestCoupon.instanceId));
+            plan1.setCouponNames(List.of(bestCoupon.couponName));
+            plan1.setCouponSavedAmount(bestCoupon.savedAmount);
+            plan1.setUsedPoints(usedPoints);
+            plan1.setPointSavedAmount(pointSavedAmount);
+            plan1.setTotalSavedAmount(bestCoupon.savedAmount.add(pointSavedAmount));
+            plan1.setRank(1);
+            plan1.setPlanName(buildPlanName(bestCoupon, usedPoints, pointSavedAmount, true, true));
+            plan1.setReason(buildReason(bestCoupon, storeName, businessTypeName, currentPoints,
+                    usedPoints, pointSavedAmount, true, true));
+            recommendations.add(plan1);
+
+            BenefitRecommendVO plan2 = new BenefitRecommendVO();
+            plan2.setPlanId(2);
+            plan2.setCouponIds(List.of(bestCoupon.instanceId));
+            plan2.setCouponNames(List.of(bestCoupon.couponName));
+            plan2.setCouponSavedAmount(bestCoupon.savedAmount);
+            plan2.setUsedPoints(0);
+            plan2.setPointSavedAmount(BigDecimal.ZERO);
+            plan2.setTotalSavedAmount(bestCoupon.savedAmount);
+            plan2.setRank(2);
+            plan2.setPlanName(buildPlanName(bestCoupon, 0, BigDecimal.ZERO, true, false));
+            plan2.setReason(buildReason(bestCoupon, storeName, businessTypeName, currentPoints,
+                    0, BigDecimal.ZERO, true, false));
+            recommendations.add(plan2);
+
+            BenefitRecommendVO plan3 = new BenefitRecommendVO();
+            plan3.setPlanId(3);
+            plan3.setCouponIds(List.of());
+            plan3.setCouponNames(List.of());
+            plan3.setCouponSavedAmount(BigDecimal.ZERO);
+            plan3.setUsedPoints(usedPoints);
+            plan3.setPointSavedAmount(pointSavedAmount);
+            plan3.setTotalSavedAmount(pointSavedAmount);
+            plan3.setRank(3);
+            plan3.setPlanName(buildPlanName(null, usedPoints, pointSavedAmount, false, true));
+            plan3.setReason(buildReason(null, storeName, businessTypeName, currentPoints,
+                    usedPoints, pointSavedAmount, false, true));
+            recommendations.add(plan3);
+        } else if (hasCoupons) {
+            AvailableCouponInfo bestCoupon = availableList.get(0);
+
+            BenefitRecommendVO plan1 = new BenefitRecommendVO();
+            plan1.setPlanId(1);
+            plan1.setCouponIds(List.of(bestCoupon.instanceId));
+            plan1.setCouponNames(List.of(bestCoupon.couponName));
+            plan1.setCouponSavedAmount(bestCoupon.savedAmount);
+            plan1.setUsedPoints(0);
+            plan1.setPointSavedAmount(BigDecimal.ZERO);
+            plan1.setTotalSavedAmount(bestCoupon.savedAmount);
+            plan1.setRank(1);
+            plan1.setPlanName(buildPlanName(bestCoupon, 0, BigDecimal.ZERO, true, false));
+            plan1.setReason(buildReason(bestCoupon, storeName, businessTypeName, currentPoints,
+                    0, BigDecimal.ZERO, true, false));
+            recommendations.add(plan1);
+
+            if (availableList.size() > 1) {
+                AvailableCouponInfo secondCoupon = availableList.get(1);
+
+                BenefitRecommendVO plan2 = new BenefitRecommendVO();
+                plan2.setPlanId(2);
+                plan2.setCouponIds(List.of(secondCoupon.instanceId));
+                plan2.setCouponNames(List.of(secondCoupon.couponName));
+                plan2.setCouponSavedAmount(secondCoupon.savedAmount);
+                plan2.setUsedPoints(0);
+                plan2.setPointSavedAmount(BigDecimal.ZERO);
+                plan2.setTotalSavedAmount(secondCoupon.savedAmount);
+                plan2.setRank(2);
+                plan2.setPlanName(buildPlanName(secondCoupon, 0, BigDecimal.ZERO, true, false));
+                plan2.setReason(buildReason(secondCoupon, storeName, businessTypeName, currentPoints,
+                        0, BigDecimal.ZERO, true, false));
+                recommendations.add(plan2);
+            }
+        } else if (hasPoints) {
+            BenefitRecommendVO plan1 = new BenefitRecommendVO();
+            plan1.setPlanId(1);
+            plan1.setCouponIds(List.of());
+            plan1.setCouponNames(List.of());
+            plan1.setCouponSavedAmount(BigDecimal.ZERO);
+            plan1.setUsedPoints(usedPoints);
+            plan1.setPointSavedAmount(pointSavedAmount);
+            plan1.setTotalSavedAmount(pointSavedAmount);
+            plan1.setRank(1);
+            plan1.setPlanName(buildPlanName(null, usedPoints, pointSavedAmount, false, true));
+            plan1.setReason(buildReason(null, storeName, businessTypeName, currentPoints,
+                    usedPoints, pointSavedAmount, false, true));
+            recommendations.add(plan1);
+        }
+
+        result.setRecommendations(recommendations);
+        if (!recommendations.isEmpty()) {
+            result.setBestRecommend(recommendations.get(0));
+        }
+
+        return result;
+    }
+
+    private String checkCouponUnavailability(CouponTemplate template, String storeCode, String storeName,
+                                              Integer businessType, String businessTypeName,
+                                              Integer posType, BigDecimal cartTotal) {
+        if (template.getStoreLimitFlag() != null && template.getStoreLimitFlag() == 1) {
+            if (template.getApplyStoreCodes() != null && !template.getApplyStoreCodes().isEmpty()) {
+                List<String> applyStoreList = parseCsvList(template.getApplyStoreCodes());
+                if (!applyStoreList.contains(storeCode)) {
+                    return "此券仅限指定门店使用，当前门店" + storeName + "不可用";
+                }
+            }
+        } else if (template.getStoreLimitFlag() != null && template.getStoreLimitFlag() == 2) {
+            if (template.getExcludeStoreCodes() != null && !template.getExcludeStoreCodes().isEmpty()) {
+                List<String> excludeStoreList = parseCsvList(template.getExcludeStoreCodes());
+                if (excludeStoreList.contains(storeCode)) {
+                    return "此券在" + storeName + "门店不可用";
+                }
+            }
+        }
+
+        if (template.getApplyBusinessTypes() != null && !template.getApplyBusinessTypes().isEmpty()) {
+            List<Integer> applyBusinessList = parseCsvIntList(template.getApplyBusinessTypes());
+            if (businessType == null || !applyBusinessList.contains(businessType)) {
+                return "此券仅限" + businessTypeName + "业态使用，当前为" + businessTypeName;
+            }
+        }
+
+        if (template.getApplyPosTypes() != null && !template.getApplyPosTypes().isEmpty()) {
+            List<Integer> applyPosList = parseCsvIntList(template.getApplyPosTypes());
+            if (posType == null || !applyPosList.contains(posType)) {
+                String posName = posType != null ? getPosTypeName(posType) : "未知";
+                return "此券不支持" + posName + "使用";
+            }
+        }
+
+        if (template.getCouponType() != null && template.getCouponType() == 1) {
+            if (template.getFullAmount() != null && cartTotal.compareTo(template.getFullAmount()) < 0) {
+                return "购物车总额未满" + template.getFullAmount() + "元，不满足满减条件";
+            }
+        }
+
+        return null;
+    }
+
+    private String buildPlanName(AvailableCouponInfo coupon, int usedPoints, BigDecimal pointSavedAmount,
+                                  boolean useCoupon, boolean usePoints) {
+        StringBuilder sb = new StringBuilder();
+        if (useCoupon && coupon != null) {
+            sb.append("使用").append(coupon.couponName);
+        }
+        if (usePoints && usedPoints > 0) {
+            if (sb.length() > 0) {
+                sb.append("+");
+            }
+            sb.append(usedPoints).append("积分");
+        }
+        if (sb.length() == 0) {
+            sb.append("暂无可用权益");
+        }
+        return sb.toString();
+    }
+
+    private String buildReason(AvailableCouponInfo coupon, String storeName, String businessTypeName,
+                                int currentPoints, int usedPoints, BigDecimal pointSavedAmount,
+                                boolean useCoupon, boolean usePoints) {
+        StringBuilder sb = new StringBuilder();
+        if (useCoupon && coupon != null) {
+            if (coupon.couponType != null && coupon.couponType == 1) {
+                sb.append("满").append(coupon.fullAmount != null ? coupon.fullAmount : 0)
+                        .append("减").append(coupon.reduceAmount).append("券适用于当前门店")
+                        .append(storeName).append("的").append(businessTypeName).append("商品，可节省")
+                        .append(coupon.savedAmount).append("元");
+            } else {
+                sb.append(coupon.couponName).append("适用于当前门店").append(storeName)
+                        .append("的").append(businessTypeName).append("商品");
+            }
+        }
+        if (usePoints && usedPoints > 0) {
+            if (sb.length() > 0) {
+                sb.append("，");
+            }
+            sb.append("您有").append(currentPoints).append("积分，本次可抵扣")
+                    .append(pointSavedAmount).append("元");
+        }
+        if (useCoupon && usePoints && coupon != null && usedPoints > 0) {
+            sb.append("，券+积分组合可省").append(coupon.savedAmount.add(pointSavedAmount)).append("元，是最划算的方案");
+        }
+        if (sb.length() == 0) {
+            sb.append("暂无推荐方案");
+        }
+        return sb.toString();
+    }
+
+    private static class AvailableCouponInfo {
+        Long instanceId;
+        Long templateId;
+        String couponName;
+        Integer couponType;
+        BigDecimal fullAmount;
+        BigDecimal reduceAmount;
+        BigDecimal savedAmount;
+
+        BigDecimal getSavedAmount() {
+            return savedAmount;
+        }
+    }
 
     @Override
     public PosValidateResultVO posValidate(PosOrderValidateDTO dto) {
@@ -805,6 +1137,9 @@ public class OrderServiceImpl implements OrderService {
             throw new BusinessException("订单状态错误，当前状态: " + order.getOrderStatus());
         }
 
+        RiskCheckResultVO riskResult = performRiskCheck(RiskSceneEnum.POS_VALIDATE, order.getMemberId(),
+                order.getStoreCode(), order.getPosCode(), order.getOrderNo());
+
         order.setOrderStatus(OrderStatusEnum.PAID.getCode());
         order.setPayAmount(dto.getPayAmount() != null ? dto.getPayAmount() : order.getPayAmount());
         order.setPayTime(dto.getPayTime() != null ? dto.getPayTime() : LocalDateTime.now());
@@ -845,7 +1180,9 @@ public class OrderServiceImpl implements OrderService {
             }
         }
 
-        return convertToVO(order);
+        OrderVO result = convertToVO(order);
+        result.setRiskCheck(riskResult);
+        return result;
     }
 
     @Override
@@ -895,6 +1232,9 @@ public class OrderServiceImpl implements OrderService {
             throw new BusinessException("订单状态错误，当前状态: " + order.getOrderStatus());
         }
 
+        RiskCheckResultVO riskResult = performRiskCheck(RiskSceneEnum.CROSS_STORE_REDEEM, order.getMemberId(),
+                order.getStoreCode(), order.getPosCode(), order.getOrderNo());
+
         order.setOrderStatus(OrderStatusEnum.COMPLETED.getCode());
         order.setCompleteTime(LocalDateTime.now());
         consumeOrderMapper.updateById(order);
@@ -943,7 +1283,9 @@ public class OrderServiceImpl implements OrderService {
             updateCouponUsedCount(order);
         }
 
-        return convertToVO(order);
+        OrderVO result = convertToVO(order);
+        result.setRiskCheck(riskResult);
+        return result;
     }
 
     @Override
@@ -1211,5 +1553,21 @@ public class OrderServiceImpl implements OrderService {
         }
         PosTypeEnum typeEnum = PosTypeEnum.getByCode(code);
         return typeEnum != null ? typeEnum.getName() : "未知";
+    }
+
+    private RiskCheckResultVO performRiskCheck(RiskSceneEnum scene, Long memberId,
+                                                String storeCode, String posCode, String orderNo) {
+        try {
+            RiskCheckDTO riskDTO = new RiskCheckDTO();
+            riskDTO.setScene(scene.getCode());
+            riskDTO.setMemberId(memberId);
+            riskDTO.setStoreCode(storeCode);
+            riskDTO.setPosCode(posCode);
+            riskDTO.setOrderNo(orderNo);
+            return riskCheckService.checkRisk(riskDTO);
+        } catch (Exception e) {
+            log.warn("风控检查异常, scene={}, memberId={}, orderNo={}", scene, memberId, orderNo, e);
+            return null;
+        }
     }
 }

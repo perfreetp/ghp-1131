@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.benefit.mapper.IdempotentRecordMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.benefit.entity.IdempotentRecord">
+        <id column="id" property="id"/>
+        <result column="business_no" property="businessNo"/>
+        <result column="business_type" property="businessType"/>
+        <result column="process_status" property="processStatus"/>
+        <result column="request_id" property="requestId"/>
+        <result column="request_param" property="requestParam"/>
+        <result column="result_code" property="resultCode"/>
+        <result column="result_msg" property="resultMsg"/>
+        <result column="retry_count" property="retryCount"/>
+        <result column="operator" property="operator"/>
+        <result column="operator_type" property="operatorType"/>
+        <result column="operate_time" property="operateTime"/>
+        <result column="next_retry_time" property="nextRetryTime"/>
+        <result column="remark" property="remark"/>
+        <result column="create_time" property="createTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, business_no, business_type, process_status, request_id, request_param,
+        result_code, result_msg, retry_count, operator, operator_type, operate_time,
+        next_retry_time, remark, create_time, create_by, update_time, update_by, is_deleted
+    </sql>
+
+    <select id="selectByBusinessNo" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM t_idempotent_record
+        WHERE business_no = #{businessNo}
+          AND business_type = #{businessType}
+          AND is_deleted = 0
+        ORDER BY create_time DESC
+        LIMIT 1
+    </select>
+
+</mapper>

@@ -20,6 +20,8 @@ public class RedisKeyUtil {
 
     private static final String IDEMPOTENT_PREFIX = MBC_PREFIX + KEY_SEPARATOR + "idempotent";
 
+    private static final String RISK_PREFIX = MBC_PREFIX + KEY_SEPARATOR + "risk";
+
     public static String memberCode(String memberCode) {
         return MEMBER_PREFIX + KEY_SEPARATOR + "code" + KEY_SEPARATOR + memberCode;
     }
@@ -78,5 +80,9 @@ public class RedisKeyUtil {
 
     public static String idemOrderRefund(String refundNo) {
         return IDEMPOTENT_PREFIX + KEY_SEPARATOR + "order" + KEY_SEPARATOR + "refund" + KEY_SEPARATOR + refundNo;
+    }
+
+    public static String riskCount(Integer scene, String identity) {
+        return RISK_PREFIX + KEY_SEPARATOR + "count" + KEY_SEPARATOR + scene + KEY_SEPARATOR + identity;
     }
 }

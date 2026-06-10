@@ -20,7 +20,9 @@ public enum TimelineEventTypeEnum {
     ORDER_REFUND(11, "订单退款", "订单退款", "退款"),
     BIRTHDAY_GRANT(12, "生日权益发放", "生日积分/券到账", "生日礼"),
     MEMBER_MERGE(13, "会员合并", "合并到其他账号或被合并", "合并"),
-    MESSAGE_PUSH(14, "消息推送", "收到消息推送", "消息");
+    MESSAGE_PUSH(14, "消息推送", "收到消息推送", "消息"),
+    MANUAL_REPLAY(15, "人工重放", "客服人工重放幂等请求", "重放"),
+    MANUAL_MARK_FAIL(16, "人工标记失败", "客服标记处理失败", "标记失败");
 
     private final Integer code;
 

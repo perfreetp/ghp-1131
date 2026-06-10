@@ -789,3 +789,492 @@ ALTER TABLE `t_coupon_template`
 - `PUT /store/update` - 更新门店信息
 - `DELETE /store/{id}` - 删除门店
 
+---
+
+## 活动人群圈选能力
+
+### 功能说明
+支持按多种维度组合圈选目标人群，创建活动时直接绑定人群，活动效果中可查看不同人群的转化对比。
+
+### 支持的圈选规则（8种）
+| Code | 规则类型 | 说明 |
+|------|----------|------|
+| 1 | 会员等级 | 指定等级范围的会员 |
+| 2 | 近30天消费金额 | 近30天消费金额区间 |
+| 3 | 近30天消费次数 | 近30天消费次数区间 |
+| 4 | 最近未到店天数 | 超过N天未消费的沉睡会员 |
+| 5 | 生日月份 | 本月/指定月份生日的会员 |
+| 6 | 券使用偏好 | 偏好某些类型优惠券的会员 |
+| 7 | 积分区间 | 当前积分在指定区间的会员 |
+| 8 | 累计消费金额 | 历史累计消费金额区间 |
+
+### 人群组表 SQL
+```sql
+CREATE TABLE `t_crowd_group` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `crowd_code` VARCHAR(64) NOT NULL COMMENT '人群编码',
+    `crowd_name` VARCHAR(128) NOT NULL COMMENT '人群名称',
+    `crowd_type` TINYINT DEFAULT 1 COMMENT '类型：1规则圈选 2手工导入 3活动沉淀',
+    `rule_config` TEXT DEFAULT NULL COMMENT '圈选规则配置(JSON数组)',
+    `estimated_count` INT DEFAULT 0 COMMENT '预估人数',
+    `actual_count` INT DEFAULT 0 COMMENT '实际人数',
+    `refresh_type` TINYINT DEFAULT 2 COMMENT '刷新方式：1手动 2每日定时',
+    `last_refresh_time` DATETIME DEFAULT NULL COMMENT '最近刷新时间',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0草稿 1有效 2已失效',
+    `description` VARCHAR(500) DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_crowd_code` (`crowd_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人群组表';
+```
+
+### 人群圈选接口
+- `POST /query/crowd/create` - 创建人群组
+- `PUT /query/crowd/update` - 修改人群组
+- `DELETE /query/crowd/{id}` - 删除人群组
+- `GET /query/crowd/{id}` - 人群组详情
+- `POST /query/crowd/page` - 分页查询人群列表
+- `POST /query/crowd/calculate` - 手动触发计算/刷新人群
+- `POST /query/crowd/members` - 查询人群成员列表
+- `GET /query/crowd/check-member/{crowdId}/{memberId}` - 检查会员是否在人群中
+
+### 人群圈选 curl 示例
+```bash
+# ============================================================
+# Step 1 - 创建「30天未到店的黄金以上会员」人群
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/crowd/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "crowdCode": "CROWD_SILENT_GOLD",
+    "crowdName": "30天未到店黄金会员",
+    "crowdType": 1,
+    "rules": [
+      {"ruleType": 1, "minLevel": 3, "maxLevel": 5},
+      {"ruleType": 4, "days": 30}
+    ],
+    "refreshType": 2,
+    "description": "最近30天未消费的黄金及以上等级会员，适合做召回活动",
+    "status": 1
+  }' | python -m json.tool
+# 记录返回的 crowdId，假设为 4
+export CROWD_ID=4
+
+
+# ============================================================
+# Step 2 - 手动触发计算人群
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/crowd/calculate \
+  -H "Content-Type: application/json" \
+  -d '{"crowdId": '$CROWD_ID'}' | python -m json.tool
+
+
+# ============================================================
+# Step 3 - 查询人群组成员
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/crowd/members \
+  -H "Content-Type: application/json" \
+  -d '{"crowdId": '$CROWD_ID',"pageNum":1,"pageSize":20}' | python -m json.tool
+
+
+# ============================================================
+# Step 4 - 创建活动时绑定人群
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/activity/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activityCode": "ACT_RECALL_202506",
+    "activityName": "沉睡会员召回活动",
+    "activityType": 1,
+    "crowdGroupId": '$CROWD_ID',
+    "startTime": "2025-06-15T00:00:00",
+    "endTime": "2025-06-30T23:59:59",
+    "couponTemplateIds": [2],
+    "budgetCoupons": 2000,
+    "description": "针对30天未到店的黄金以上会员的专属召回券",
+    "status": 1
+  }' | python -m json.tool
+```
+
+---
+
+## 会员权益时间线
+
+### 功能说明
+将会员的注册、发券、锁定、核销、退款、积分变化、等级变化、合并等动作按时间串联起来，客服点进会员后能快速还原整段服务过程。
+
+### 支持的事件类型（14种）
+| Code | 事件类型 | 标签 | 说明 |
+|------|----------|------|------|
+| 1 | 会员注册 | 注册 | 注册成为会员 |
+| 2 | 等级升级 | 升级 | 会员等级提升 |
+| 3 | 等级降级 | 降级 | 会员等级下降 |
+| 4 | 积分增加 | +积分 | 积分到账 |
+| 5 | 积分扣减 | -积分 | 使用积分抵扣 |
+| 6 | 领取优惠券 | 领券 | 获得优惠券 |
+| 7 | 权益锁定 | 锁定 | 下单锁定优惠券 |
+| 8 | 权益核销 | 核销 | 使用优惠券/积分 |
+| 9 | 券过期 | 过期 | 优惠券过期未使用 |
+| 10 | 订单支付 | 支付 | 订单支付成功 |
+| 11 | 订单退款 | 退款 | 订单退款 |
+| 12 | 生日权益发放 | 生日礼 | 生日积分/券到账 |
+| 13 | 会员合并 | 合并 | 合并到其他账号或被合并 |
+| 14 | 消息推送 | 消息 | 收到消息推送 |
+
+### 时间线接口
+- `POST /query/member/timeline` - 获取会员权益时间线
+
+### 时间线 curl 示例
+```bash
+# ============================================================
+# 查询会员完整权益时间线
+# ============================================================
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/member/timeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberId": '$MEMBER_ID',
+    "eventTypes": [1, 2, 4, 5, 6, 7, 8, 10, 11],
+    "pageNum": 1,
+    "pageSize": 20
+  }' | python -m json.tool
+
+# 返回示例：
+# {
+#   "memberId": 8,
+#   "memberName": "收银测试员",
+#   "totalCount": 25,
+#   "events": {
+#     "records": [
+#       {
+#         "eventId": "EVT202506100000001",
+#         "eventType": 8,
+#         "eventTypeName": "权益核销",
+#         "eventTag": "核销",
+#         "eventDesc": "使用满200减30通用券",
+#         "eventTime": "2025-06-15 14:30:00",
+#         "bizType": 2,
+#         "bizId": "CI20250601000002",
+#         "amount": 30.00,
+#         "detail": {"orderNo": "POS202506150001", "couponName": "满200减30通用券"},
+#         "direction": -1
+#       },
+#       ...
+#     ]
+#   }
+# }
+```
+
+---
+
+## 幂等与重试友好接口约定
+
+### 设计原则
+1. **写操作均支持幂等**：同一业务唯一键重复调用返回同一处理结果
+2. **状态机校验**：已完成的操作再次调用直接返回成功结果（不重复处理）
+3. **进行中返回处理中**：前面请求还在处理时，返回处理中状态
+4. **失败可重试**：锁超时或异常后，后续请求可重新获取锁并重试
+
+### 幂等接口清单
+| 接口 | 幂等键 | 说明 |
+|------|--------|------|
+| `POST /order/create` | orderNo | 订单创建 |
+| `POST /order/pay` | orderNo | 支付锁定权益 |
+| `POST /order/complete` | orderNo | 完成核销权益 |
+| `POST /order/refund` | refundNo | 退款返还权益 |
+| `POST /benefit/lock` | orderNo + benefitType | 权益锁定 |
+| `POST /benefit/confirm` | orderNo / useNo | 权益确认 |
+| `POST /benefit/return` | refundNo | 权益返还 |
+
+### 返回字段说明
+所有幂等接口统一返回以下附加字段：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `idempotent` | Boolean | 是否为幂等返回（true=重复调用直接返回已有结果） |
+| `requestId` | String | 本次请求唯一ID，用于排查问题 |
+| `processStatus` | Integer | 处理状态：1=处理中 2=已完成 3=失败 |
+
+### 幂等测试 curl 示例
+```bash
+# ============================================================
+# 演示：连续两次调用支付接口，第二次应返回幂等结果
+# ============================================================
+export TEST_ORDER=TEST$(date +%Y%m%d%H%M%S)
+
+# 先创建订单
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo": "'$TEST_ORDER'",
+    "memberId": '$MEMBER_ID',
+    "orderType": 1,
+    "totalAmount": 299.00,
+    "storeCode": "STORE001",
+    "storeName": "朝阳大卖店",
+    "channel": "POS"
+  }' | python -m json.tool
+
+# 第一次支付（正常处理）
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/pay \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo": "'$TEST_ORDER'",
+    "payAmount": 299.00
+  }' | python -m json.tool
+# 返回：idempotent=false, processStatus=2
+
+# 第二次支付（幂等返回，结果一致）
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/pay \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo": "'$TEST_ORDER'",
+    "payAmount": 299.00
+  }' | python -m json.tool
+# 返回：idempotent=true, processStatus=2（与第一次结果完全一致）
+
+# 完成核销（同样支持幂等）
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/complete \
+  -H "Content-Type: application/json" \
+  -d '{"orderNo": "'$TEST_ORDER'"}' | python -m json.tool
+
+# 再调用一次完成（幂等返回）
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/complete \
+  -H "Content-Type: application/json" \
+  -d '{"orderNo": "'$TEST_ORDER'"}' | python -m json.tool
+```
+
+### 收银端对接建议
+1. 所有写操作必须传唯一业务号（orderNo/refundNo 等）
+2. 遇到网络超时时，使用相同参数重试即可，后端保证幂等
+3. 返回 `processStatus=1（处理中）` 时，建议间隔 1-3 秒后重试
+4. 返回 `idempotent=true` 说明之前已成功处理，直接视为成功
+
+---
+
+## 权益核销对账能力
+
+### 功能说明
+运营后台按门店、收银设备、券活动和日期查看核销、退款、返还、异常重试的汇总，能钻到明细并标出和收银流水对不上的记录。
+
+### 对账状态
+| Code | 状态 | 说明 |
+|------|------|------|
+| 1 | 已匹配 | 对账一致 |
+| 2 | 金额不符 | 权益金额与收银流水不一致 |
+| 3 | 流水缺失 | 权益记录无对应收银流水 |
+| 4 | 重复核销 | 同一权益被多次核销 |
+| 5 | 退款异常 | 退款金额与返还权益不匹配 |
+| 6 | 待对账 | 尚未完成对账 |
+
+### 对账接口
+- `POST /query/reconcile/summary` - 对账汇总（支持按门店/设备/券/日期分组）
+- `POST /query/reconcile/detail` - 对账明细钻取（分页）
+- `POST /query/reconcile/execute?date=2025-06-11` - 手动执行某日对账
+
+### 对账 curl 示例
+```bash
+# 执行6月11日的对账
+curl -s -X POST "http://127.0.0.1:8080/api/mbc/query/reconcile/execute?date=2025-06-11" | python -m json.tool
+
+# 按门店汇总查看对账结果
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/reconcile/summary \
+  -H "Content-Type: application/json" \
+  -d '{"startDate":"2025-06-11","endDate":"2025-06-11","groupBy":"store"}' | python -m json.tool
+
+# 查看对账不上的明细
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/reconcile/detail \
+  -H "Content-Type: application/json" \
+  -d '{"startDate":"2025-06-11","endDate":"2025-06-11","reconcileStatus":2}' | python -m json.tool
+```
+
+---
+
+## 风险拦截策略
+
+### 功能说明
+针对同一会员短时间大量领券、同一设备频繁试算、异常退款返还、跨门店高频核销等场景给出风险等级，收银试算和核销时返回是否拦截或需要人工确认。
+
+### 风险等级
+| Code | 等级 | 处置建议 |
+|------|------|----------|
+| 0 | 安全 | 放行 |
+| 1 | 低风险 | 放行（需关注） |
+| 2 | 中风险 | 建议人工确认 |
+| 3 | 高风险 | 建议拦截 |
+
+### 风险场景
+| Code | 场景 | 说明 |
+|------|------|------|
+| 1 | 领券 | 同一会员短时间大量领券 |
+| 2 | 试算 | 同一设备频繁试算 |
+| 3 | 退款返还 | 异常退款返还 |
+| 4 | 跨店核销 | 跨门店高频核销 |
+
+### 默认阈值
+| 场景 | 时间窗口 | LOW | MEDIUM | HIGH |
+|------|----------|-----|--------|------|
+| 领券 | 60分钟 | >5次 | >10次 | >20次 |
+| 试算 | 60分钟 | >20次 | >50次 | >100次 |
+| 退款 | 7天 | >3次 | >5次 | >10次 |
+| 跨店 | 7天 | >3个不同门店 | >5个 | >10个 |
+
+### 风控接口
+- `POST /query/risk/check` - 风控检查
+- `POST /query/risk/records` - 查询风控记录
+- `POST /query/risk/handle` - 人工处置
+
+### 风控 curl 示例
+```bash
+# 检查领券风控
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/risk/check \
+  -H "Content-Type: application/json" \
+  -d '{"scene":1,"memberId":8,"templateId":1}' | python -m json.tool
+# 返回: pass/riskLevel/riskItems/advice(放行/人工确认/拦截)
+
+# 查看风控拦截记录
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/risk/records \
+  -H "Content-Type: application/json" \
+  -d '{"riskLevel":3,"pageNum":1,"pageSize":20}' | python -m json.tool
+
+# 人工处置（放行/拦截）
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/risk/handle \
+  -H "Content-Type: application/json" \
+  -d '{"recordId":1,"handleResult":1,"handleStaff":"客服-李姐","handleRemark":"核实为正常操作"}' | python -m json.tool
+```
+
+---
+
+## 小程序智能权益推荐
+
+### 功能说明
+按当前定位门店、业态、商品购物车自动筛出最合适的券和积分抵扣方案，返回推荐原因，不让会员看到一堆到店后不能用的券。
+
+### 推荐接口
+- `POST /order/smart-recommend` - 智能权益推荐
+
+### 推荐结果
+返回3个方案供会员选择：
+1. **最优方案**：券+积分组合，总节省最多
+2. **仅用券**：不用积分，适合想攒积分的用户
+3. **仅用积分**：不用券，适合没有可用券时
+
+每张不可用券都会给出具体原因（如"此券仅限大卖场使用，当前为便利店"）。
+
+### 推荐curl示例
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/mbc/order/smart-recommend \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memberId": 8,
+    "storeCode": "STORE001",
+    "posCode": "4",
+    "items": [
+      {"skuId":"SKU001","skuName":"纯牛奶","categoryId":"DAIRY","quantity":2,"unitPrice":68.00,"subtotal":136.00},
+      {"skuId":"SKU002","skuName":"调和油","categoryId":"OIL","quantity":1,"unitPrice":99.90,"subtotal":99.90}
+    ]
+  }' | python -m json.tool
+# 返回: availableCoupons/recommendations(含planName+reason)/unavailableCoupons(含原因)
+```
+
+---
+
+## 活动预算和库存控制
+
+### 功能说明
+活动创建时配置总预算、门店预算、发券上限和核销上限，领取、锁定、核销、退款都会回写预算占用，活动效果里能看到预算消耗进度。
+
+### 预算类型
+- **总预算**（storeCode=NULL, budgetType=1）：控制活动总体消耗
+- **门店预算**（storeCode=具体门店, budgetType=2）：控制单门店消耗
+
+### 预算变动类型
+| Code | 变动类型 | 说明 |
+|------|----------|------|
+| 1 | 领取占用 | 发券时占用预算 |
+| 2 | 锁定占用 | 下单锁定权益时占用 |
+| 3 | 核销确认 | 核销完成确认 |
+| 4 | 退款释放 | 退款返还释放预算 |
+| 5 | 超时释放 | 锁超时释放预算 |
+
+### 预算接口
+- `POST /query/activity/budget/create` - 创建活动预算
+- `GET /query/activity/budget/progress/{activityId}` - 查看预算消耗进度
+- `POST /query/activity/budget/logs` - 预算变动日志
+
+### 预算curl示例
+```bash
+# 为活动创建总预算
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/activity/budget/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activityId": 4,
+    "totalBudget": 50000.00,
+    "issueLimit": 10000,
+    "redeemLimit": 8000
+  }' | python -m json.tool
+
+# 为特定门店创建门店预算
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/activity/budget/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "activityId": 4,
+    "storeCode": "STORE001",
+    "storeName": "朝阳大卖店",
+    "totalBudget": 20000.00,
+    "issueLimit": 4000,
+    "redeemLimit": 3000
+  }' | python -m json.tool
+
+# 查看预算消耗进度（含各门店、使用率、最近变动）
+curl -s http://127.0.0.1:8080/api/mbc/query/activity/budget/progress/4 | python -m json.tool
+```
+
+---
+
+## 客服异常处理入口
+
+### 功能说明
+按订单号或退款单号查到整条权益处理链路，对处于"处理中"的幂等请求支持人工重放或标记失败，处理后时间线里也能看到这次人工操作。
+
+### 幂等处理状态
+| Code | 状态 | 说明 |
+|------|------|------|
+| 1 | 处理中 | 请求正在处理 |
+| 2 | 已完成 | 处理成功 |
+| 3 | 已失败 | 处理失败（可重试） |
+
+### 操作类型
+| Code | 类型 | 说明 |
+|------|------|------|
+| 0 | 系统自动 | 系统正常执行 |
+| 1 | 人工重放 | 客服手动重新执行 |
+| 2 | 人工标记失败 | 客服确认处理失败 |
+
+### 异常处理接口
+- `POST /query/benefit/chain` - 查询权益处理链路
+- `POST /query/idempotent/handle` - 人工处理幂等记录（重放/标记失败）
+- `POST /query/idempotent/records` - 查询待处理幂等记录
+
+### 异常处理 curl 示例
+```bash
+# 按订单号查权益链路
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/benefit/chain \
+  -H "Content-Type: application/json" \
+  -d '{"orderNo":"POS20250611000001"}' | python -m json.tool
+# 返回: 订单状态+锁定/核销/返还步骤+幂等记录(含canReplay/canMarkFail)
+
+# 人工重放（重新执行卡住的操作）
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/idempotent/handle \
+  -H "Content-Type: application/json" \
+  -d '{"id":1,"action":1,"operator":"客服-李姐","remark":"核实后重放"}' | python -m json.tool
+
+# 人工标记失败
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/idempotent/handle \
+  -H "Content-Type: application/json" \
+  -d '{"id":2,"action":2,"operator":"客服-李姐","remark":"确认订单已取消，标记失败"}' | python -m json.tool
+
+# 查看所有处理中的幂等记录
+curl -s -X POST http://127.0.0.1:8080/api/mbc/query/idempotent/records \
+  -H "Content-Type: application/json" \
+  -d '{"processStatus":1,"pageNum":1,"pageSize":20}' | python -m json.tool
+```
+
+
