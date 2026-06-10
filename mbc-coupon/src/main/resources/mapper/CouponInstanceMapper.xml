@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.coupon.mapper.CouponInstanceMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.coupon.entity.CouponInstance">
+        <id column="id" property="id"/>
+        <result column="instance_no" property="instanceNo"/>
+        <result column="template_id" property="templateId"/>
+        <result column="member_id" property="memberId"/>
+        <result column="coupon_status" property="couponStatus"/>
+        <result column="valid_start" property="validStart"/>
+        <result column="valid_end" property="validEnd"/>
+        <result column="used_time" property="usedTime"/>
+        <result column="used_order_no" property="usedOrderNo"/>
+        <result column="locked_time" property="lockedTime"/>
+        <result column="lock_order_no" property="lockOrderNo"/>
+        <result column="receive_source" property="receiveSource"/>
+        <result column="receive_time" property="receiveTime"/>
+        <result column="source_id" property="sourceId"/>
+        <result column="remark" property="remark"/>
+        <result column="create_time" property="createTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, instance_no, template_id, member_id, coupon_status, valid_start, valid_end,
+        used_time, used_order_no, locked_time, lock_order_no, receive_source, receive_time,
+        source_id, remark, create_time, create_by, update_time, update_by, is_deleted
+    </sql>
+
+    <select id="countMemberDailyReceive" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM t_coupon_instance
+        WHERE member_id = #{memberId}
+          AND template_id = #{templateId}
+          AND DATE(receive_time) = #{date}
+          AND is_deleted = 0
+    </select>
+
+    <select id="countMemberTotalReceive" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM t_coupon_instance
+        WHERE member_id = #{memberId}
+          AND template_id = #{templateId}
+          AND is_deleted = 0
+    </select>
+
+    <select id="selectExpiringInDays" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM t_coupon_instance
+        WHERE coupon_status IN
+        <foreach collection="statusList" item="status" open="(" separator="," close=")">
+            #{status}
+        </foreach>
+          AND valid_end IS NOT NULL
+          AND valid_end &lt;= DATE_ADD(NOW(), INTERVAL #{days} DAY)
+          AND valid_end &gt; NOW()
+          AND is_deleted = 0
+        ORDER BY valid_end ASC
+    </select>
+
+</mapper>

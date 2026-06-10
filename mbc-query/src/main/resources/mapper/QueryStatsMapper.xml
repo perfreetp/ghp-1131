@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.query.mapper.QueryStatsMapper">
+
+    <select id="sumMemberConsume" resultType="java.util.Map">
+        SELECT
+            COALESCE(SUM(pay_amount), 0) AS totalAmount,
+            COALESCE(COUNT(*), 0) AS orderCount,
+            COALESCE(SUM(earned_points), 0) AS totalPoints,
+            COALESCE(SUM(earned_growth), 0) AS totalGrowth
+        FROM t_consume_order
+        WHERE member_id = #{memberId}
+          AND order_status IN (1, 2)
+          <if test="start != null">
+              AND pay_time >= #{start}
+          </if>
+          <if test="end != null">
+              AND pay_time <= #{end}
+          </if>
+          AND is_deleted = 0
+    </select>
+
+    <select id="countMemberConsume" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM t_consume_order
+        WHERE member_id = #{memberId}
+          AND order_status IN (1, 2)
+          <if test="start != null">
+              AND pay_time >= #{start}
+          </if>
+          <if test="end != null">
+              AND pay_time <= #{end}
+          </if>
+          AND is_deleted = 0
+    </select>
+
+    <select id="countMembersByLevel" resultType="java.util.Map">
+        SELECT
+            level_code AS levelCode,
+            COUNT(*) AS memberCount
+        FROM t_member
+        WHERE is_deleted = 0
+        GROUP BY level_code
+        ORDER BY level_code
+    </select>
+
+    <select id="countNewMembersBetween" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM t_member
+        WHERE create_time >= #{start}
+          AND create_time <= #{end}
+          AND is_deleted = 0
+    </select>
+
+    <select id="countActiveMembersBetween" resultType="java.lang.Long">
+        SELECT COUNT(DISTINCT member_id)
+        FROM t_consume_order
+        WHERE pay_time >= #{start}
+          AND pay_time <= #{end}
+          AND order_status IN (1, 2)
+          AND is_deleted = 0
+          AND member_id IS NOT NULL
+    </select>
+
+    <select id="sumOrdersBetween" resultType="java.util.Map">
+        SELECT
+            COALESCE(COUNT(*), 0) AS orderCount,
+            COALESCE(SUM(pay_amount), 0) AS totalPayAmount,
+            COALESCE(SUM(CASE WHEN member_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS memberOrderCount
+        FROM t_consume_order
+        WHERE pay_time >= #{start}
+          AND pay_time <= #{end}
+          AND order_status IN (1, 2)
+          <if test="storeCode != null and storeCode != ''">
+              AND store_code = #{storeCode}
+          </if>
+          AND is_deleted = 0
+    </select>
+
+    <select id="countMemberOrdersBetween" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM t_consume_order
+        WHERE pay_time >= #{start}
+          AND pay_time <= #{end}
+          AND order_status IN (1, 2)
+          AND member_id IS NOT NULL
+          AND is_deleted = 0
+    </select>
+
+    <select id="sumCouponsBetween" resultType="java.util.Map">
+        SELECT
+            COALESCE(SUM(CASE WHEN ci.receive_time IS NOT NULL
+                AND ci.receive_time >= #{start}
+                AND ci.receive_time <= #{end}
+                THEN 1 ELSE 0 END), 0) AS totalIssued,
+            COALESCE(SUM(CASE WHEN ci.used_time IS NOT NULL
+                AND ci.used_time >= #{start}
+                AND ci.used_time <= #{end}
+                AND ci.coupon_status = 2
+                THEN 1 ELSE 0 END), 0) AS totalUsed,
+            COALESCE(SUM(CASE WHEN pl.point_type = 1
+                AND pl.create_time >= #{start}
+                AND pl.create_time <= #{end}
+                THEN pl.change_points ELSE 0 END), 0) AS totalPointsIssued,
+            COALESCE(SUM(CASE WHEN pl.point_type = 2
+                AND pl.create_time >= #{start}
+                AND pl.create_time <= #{end}
+                THEN pl.change_points ELSE 0 END), 0) AS totalPointsRedeemed
+        FROM t_coupon_instance ci
+        LEFT JOIN t_point_log pl ON 1=1 AND pl.is_deleted = 0
+        WHERE ci.is_deleted = 0
+        LIMIT 1
+    </select>
+
+    <select id="selectActivityDailyTrend" resultType="java.util.Map">
+        SELECT
+            DATE(create_time) AS statDate,
+            COUNT(DISTINCT CASE WHEN benefit_type = 1 THEN member_id END) AS newParticipants,
+            COUNT(DISTINCT CASE WHEN benefit_type = 2 THEN member_id END) AS newConversions,
+            COALESCE(SUM(order_amount), 0) AS orderAmount
+        FROM t_benefit_use_log
+        WHERE benefit_id = #{activityId}
+          AND use_status IN (1, 2)
+          AND is_deleted = 0
+        GROUP BY DATE(create_time)
+        ORDER BY statDate ASC
+    </select>
+
+    <select id="countActivityParticipantsByLevel" resultType="java.util.Map">
+        SELECT
+            m.level_code AS levelCode,
+            COUNT(DISTINCT bul.member_id) AS participantCount
+        FROM t_benefit_use_log bul
+        LEFT JOIN t_member m ON bul.member_id = m.id AND m.is_deleted = 0
+        WHERE bul.benefit_id = #{activityId}
+          AND bul.benefit_type = 1
+          AND bul.use_status IN (1, 2)
+          AND bul.is_deleted = 0
+        GROUP BY m.level_code
+        ORDER BY m.level_code
+    </select>
+
+</mapper>

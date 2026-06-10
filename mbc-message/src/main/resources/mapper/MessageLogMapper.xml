@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.smartretail.mbc.message.mapper.MessageLogMapper">
+
+    <resultMap id="BaseResultMap" type="com.smartretail.mbc.message.entity.MessageLog">
+        <id column="id" property="id"/>
+        <result column="msg_no" property="msgNo"/>
+        <result column="member_id" property="memberId"/>
+        <result column="msg_type" property="msgType"/>
+        <result column="msg_title" property="msgTitle"/>
+        <result column="msg_content" property="msgContent"/>
+        <result column="channel" property="channel"/>
+        <result column="target" property="target"/>
+        <result column="send_status" property="sendStatus"/>
+        <result column="retry_count" property="retryCount"/>
+        <result column="fail_reason" property="failReason"/>
+        <result column="send_time" property="sendTime"/>
+        <result column="read_time" property="readTime"/>
+        <result column="biz_id" property="bizId"/>
+        <result column="biz_data" property="bizData"/>
+        <result column="create_time" property="createTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, msg_no, member_id, msg_type, msg_title, msg_content, channel, target,
+        send_status, retry_count, fail_reason, send_time, read_time, biz_id, biz_data,
+        create_time, create_by, update_time, update_by, is_deleted
+    </sql>
+
+    <select id="countUnreadByMemberId" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM t_message_log
+        WHERE member_id = #{memberId}
+          AND send_status IN (0, 1)
+          AND is_deleted = 0
+    </select>
+
+    <select id="countUnreadGroupByType" resultType="java.util.Map">
+        SELECT msg_type AS msgType, COUNT(*) AS cnt
+        FROM t_message_log
+        WHERE member_id = #{memberId}
+          AND send_status IN (0, 1)
+          AND is_deleted = 0
+        GROUP BY msg_type
+    </select>
+
+</mapper>
